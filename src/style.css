@@ -1,0 +1,23 @@
+:root {
+  font-family: Inter, Pretendard, system-ui, sans-serif;
+  color: #f7ead3;
+  background: #100d18;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+html, body, #game { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { background: radial-gradient(circle at 50% 20%, #2b1930, #0c0b12 70%); }
+canvas { display: block; margin: 0 auto; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
