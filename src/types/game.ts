@@ -10,8 +10,23 @@ export type Enemy = Phaser.Physics.Arcade.Image & {
   speed: number;
   lastHitAt: number;
   nextActionAt: number;
+  attackPending?: boolean;
+  bossPhase?: 1 | 2 | 3;
   strafeDirection: number;
   kind: EnemyKind;
+  hitRadius: number;
+};
+
+export type PermanentUpgradeId = Exclude<UpgradeId, 'dashCooldown' | 'dashDuration'>;
+
+export type PermanentUpgradeDefinition = {
+  id: PermanentUpgradeId;
+  name: string;
+  description: string;
+  maxLevel: number;
+  baseCost: number;
+  costStep: number;
+  color: number;
 };
 
 export type EnemyProjectile = Phaser.Physics.Arcade.Image & {
