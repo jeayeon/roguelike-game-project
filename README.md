@@ -2,6 +2,8 @@
 
 브라우저에서 실행되는 2D 탑다운 액션 로그라이트 사전과제입니다.
 
+공개 테스트: https://jeayeon.github.io/roguelike-game-project/
+
 ## 개발 실행
 
 ```powershell

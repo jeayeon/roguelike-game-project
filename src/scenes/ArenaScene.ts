@@ -120,11 +120,12 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   preload(): void {
-    this.load.image('player', '/assets/characters/player.png');
-    this.load.image('stalker', '/assets/characters/stalker.png');
-    this.load.image('brute', '/assets/characters/brute.png');
-    this.load.image('archer', '/assets/characters/archer.png');
-    this.load.image('boss', '/assets/characters/boss.png');
+    const characterAssetPath = `${import.meta.env.BASE_URL}assets/characters`;
+    this.load.image('player', `${characterAssetPath}/player.png`);
+    this.load.image('stalker', `${characterAssetPath}/stalker.png`);
+    this.load.image('brute', `${characterAssetPath}/brute.png`);
+    this.load.image('archer', `${characterAssetPath}/archer.png`);
+    this.load.image('boss', `${characterAssetPath}/boss.png`);
   }
 
   create(): void {
