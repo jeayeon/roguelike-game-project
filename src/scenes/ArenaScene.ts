@@ -197,12 +197,14 @@ export class ArenaScene extends Phaser.Scene {
       right: Phaser.Input.Keyboard.KeyCodes.D,
     }) as typeof this.wasd;
     this.attackKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.J);
+    this.input.on('pointerdown', () => this.music.unlock());
     this.input.keyboard!.on('keydown-R', () => {
       if (this.awaitingPermanentUpgrade) this.startContinuedRun();
       else if (this.hp <= 0) this.continueFromBeginning();
       else if (this.runFinished) this.scene.restart();
     });
     this.input.keyboard!.on('keydown', (event: KeyboardEvent) => {
+      this.music.unlock();
       if (this.settingsOverlay && (event.key === 'Escape' || event.key.toLowerCase() === 'p')) {
         this.closeSettings();
         return;
@@ -466,11 +468,27 @@ export class ArenaScene extends Phaser.Scene {
     };
     addVolumeRow('배경음악', 300, 'musicVolume');
     addVolumeRow('효과음', 410, 'effectsVolume');
-    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 555, 300, 60, 0x436b68, 1)
+    children.push(this.add.text(GAME_WIDTH / 2, 475, '피격음 미리 듣기', {
+      fontSize: '17px', color: '#bcaec3', fontStyle: 'bold', padding: { x: 4, y: 3 },
+    }).setOrigin(0.5));
+    const enemyHitPreview = this.add.rectangle(500, 520, 230, 52, 0x49394f, 1)
+      .setStrokeStyle(2, 0xd99a72, 1).setInteractive({ useHandCursor: true });
+    enemyHitPreview.on('pointerdown', () => this.music.playEffect('enemyHit'));
+    const playerHitPreview = this.add.rectangle(780, 520, 230, 52, 0x49394f, 1)
+      .setStrokeStyle(2, 0xd27b8d, 1).setInteractive({ useHandCursor: true });
+    playerHitPreview.on('pointerdown', () => this.music.playEffect('playerHit'));
+    children.push(enemyHitPreview, playerHitPreview);
+    children.push(this.add.text(500, 520, '적 베임음 · 퓨슉', {
+      fontSize: '18px', color: '#ffe0c7', fontStyle: 'bold', padding: { x: 4, y: 3 },
+    }).setOrigin(0.5));
+    children.push(this.add.text(780, 520, '플레이어 피격음 · 충격', {
+      fontSize: '18px', color: '#ffd4dc', fontStyle: 'bold', padding: { x: 4, y: 3 },
+    }).setOrigin(0.5));
+    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 615, 300, 58, 0x436b68, 1)
       .setStrokeStyle(3, 0x91e3bd, 1).setInteractive({ useHandCursor: true });
     closeButton.on('pointerdown', () => this.closeSettings());
     children.push(closeButton);
-    children.push(this.add.text(GAME_WIDTH / 2, 555, '적용하고 돌아가기', {
+    children.push(this.add.text(GAME_WIDTH / 2, 615, '적용하고 돌아가기', {
       fontSize: '21px', color: '#e8fff3', fontStyle: 'bold', padding: { x: 5, y: 4 },
     }).setOrigin(0.5));
     this.settingsOverlay = this.add.container(0, 0, children).setDepth(240);
@@ -1950,6 +1968,7 @@ export class ArenaScene extends Phaser.Scene {
       countdownActive: this.countdownActive,
       countdown: this.countdownValue,
       musicMode: this.music.currentMode,
+      audioState: this.music.audioState,
       lastSoundEffect: this.music.lastEffect,
       playerAnimation: this.player.anims.currentAnim?.key ?? null,
       playerMoving: this.player.body ? this.player.body.velocity.lengthSq() > 16 : false,
