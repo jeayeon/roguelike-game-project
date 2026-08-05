@@ -45,7 +45,7 @@ const ATTACK_ORIGIN_OFFSET = 18;
 
 export class ArenaScene extends Phaser.Scene {
   private rooms: RoomDefinition[] = [];
-  private player!: Phaser.Physics.Arcade.Image;
+  private player!: Phaser.Physics.Arcade.Sprite;
   private enemies!: Phaser.Physics.Arcade.Group;
   private enemyProjectiles!: Phaser.Physics.Arcade.Group;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -71,6 +71,7 @@ export class ArenaScene extends Phaser.Scene {
   private lastAttackAt = -1000;
   private lastDashAt = -2000;
   private invulnerableUntil = 0;
+  private playerKnockbackUntil = 0;
   private transitionLockUntil = 0;
   private roomCleared = false;
   private transitioning = false;
@@ -121,23 +122,25 @@ export class ArenaScene extends Phaser.Scene {
 
   preload(): void {
     const characterAssetPath = `${import.meta.env.BASE_URL}assets/characters`;
-    this.load.image('player', `${characterAssetPath}/player.png`);
-    this.load.image('stalker', `${characterAssetPath}/stalker.png`);
-    this.load.image('brute', `${characterAssetPath}/brute.png`);
-    this.load.image('archer', `${characterAssetPath}/archer.png`);
-    this.load.image('boss', `${characterAssetPath}/boss.png`);
+    const walkAssetPath = `${characterAssetPath}/walk`;
+    ['player', 'stalker', 'brute', 'archer', 'boss'].forEach((key) => {
+      this.load.spritesheet(key, `${walkAssetPath}/${key}-walk.png`, { frameWidth: 256, frameHeight: 256 });
+    });
+    const projectileAssetPath = `${import.meta.env.BASE_URL}assets/projectiles`;
+    this.load.spritesheet('iceArrow', `${projectileAssetPath}/ice-arrow.png`, { frameWidth: 256, frameHeight: 256 });
+    this.load.spritesheet('fireball', `${projectileAssetPath}/fireball.png`, { frameWidth: 256, frameHeight: 256 });
   }
 
   create(): void {
     this.resetRunState();
-    this.createTextures();
+    this.createAnimations();
     this.cameras.main.setBackgroundColor('#120f19');
 
     this.arenaGraphics = this.add.graphics();
     this.miniMapGraphics = this.add.graphics().setDepth(21);
     this.drawArena(this.rooms[0].accent);
 
-    this.player = this.physics.add.image(170, GAME_HEIGHT / 2, 'player');
+    this.player = this.physics.add.sprite(170, GAME_HEIGHT / 2, 'player', 0);
     this.player.setDisplaySize(72, 72).setCircle(70, 58, 58)
       .setCollideWorldBounds(true).setDepth(6).setVisible(false);
     this.enemies = this.physics.add.group();
@@ -345,6 +348,7 @@ export class ArenaScene extends Phaser.Scene {
     if (!this.gameStarted || this.hp <= 0 || this.runFinished) return;
     if (this.awaitingUpgrade || this.awaitingSpecial) {
       this.player.setVelocity(0);
+      this.player.stop().setFrame(0);
       return;
     }
 
@@ -352,16 +356,20 @@ export class ArenaScene extends Phaser.Scene {
       Number(this.cursors.right.isDown || this.wasd.right.isDown) - Number(this.cursors.left.isDown || this.wasd.left.isDown),
       Number(this.cursors.down.isDown || this.wasd.down.isDown) - Number(this.cursors.up.isDown || this.wasd.up.isDown),
     ).normalize();
-    const dashing = time < this.invulnerableUntil && time - this.lastDashAt < 210;
-    const speed = dashing ? this.dashSpeed : this.moveSpeed;
-    this.player.setVelocity(direction.x * speed, direction.y * speed);
-
-    if (Phaser.Input.Keyboard.JustDown(this.cursors.space) && time - this.lastDashAt >= this.dashCooldown) {
+    const dashStarted = Phaser.Input.Keyboard.JustDown(this.cursors.space) && time - this.lastDashAt >= this.dashCooldown;
+    if (dashStarted) {
       this.lastDashAt = time;
       this.invulnerableUntil = time + this.dashDuration;
+      this.playerKnockbackUntil = 0;
       this.player.setTint(0x9de8ff);
       this.time.delayedCall(this.dashDuration, () => this.player.active && this.player.clearTint());
     }
+    const dashing = time < this.invulnerableUntil && time - this.lastDashAt < 210;
+    const speed = dashing ? this.dashSpeed : this.moveSpeed;
+    if (time >= this.playerKnockbackUntil || dashStarted) this.player.setVelocity(direction.x * speed, direction.y * speed);
+    const walking = direction.lengthSq() > 0 && time >= this.playerKnockbackUntil;
+    if (walking) this.player.play('player-walk', true);
+    else this.player.stop().setFrame(0);
 
     const pointer = this.input.activePointer;
     // 전신 캐릭터 이미지는 조준 각도로 회전시키지 않고 좌우 방향만 전환한다.
@@ -427,7 +435,8 @@ export class ArenaScene extends Phaser.Scene {
       right: [GAME_WIDTH - 150, GAME_HEIGHT / 2],
     };
     const [x, y] = enteredFrom ? positions[enteredFrom] : [170, GAME_HEIGHT / 2];
-    this.player.setPosition(x, y).setVelocity(0).clearTint();
+    this.player.setPosition(x, y).setVelocity(0).clearTint().setAlpha(1).stop().setFrame(0);
+    this.playerKnockbackUntil = 0;
   }
 
   private spawnRoomEnemies(kinds: EnemyKind[]): void {
@@ -463,18 +472,19 @@ export class ArenaScene extends Phaser.Scene {
       enemy.kind = kind;
       enemy.attackPending = false;
       enemy.bossPhase = kind === 'boss' ? 1 : undefined;
+      enemy.phaseInvulnerableUntil = 0;
       enemy.lastHitAt = -1000;
       enemy.nextActionAt = this.time.now + 650 + index * 140;
       enemy.strafeDirection = index % 2 === 0 ? 1 : -1;
 
       if (kind === 'stalker') {
-        enemy.maxHp = 52; enemy.speed = 118; enemy.hitRadius = 17; enemy.setCircle(72, 56, 56);
+        enemy.maxHp = 52; enemy.speed = 138; enemy.hitRadius = 17; enemy.setCircle(72, 56, 56);
       } else if (kind === 'brute') {
-        enemy.maxHp = 112; enemy.speed = 72; enemy.hitRadius = 25; enemy.setCircle(78, 50, 50);
+        enemy.maxHp = 168; enemy.speed = 88; enemy.hitRadius = 25; enemy.setCircle(78, 50, 50);
       } else if (kind === 'archer') {
         enemy.maxHp = 68; enemy.speed = 88; enemy.hitRadius = 19; enemy.setCircle(73, 55, 55);
       } else {
-        enemy.maxHp = 800; enemy.speed = 76; enemy.hitRadius = 35; enemy.setCircle(78, 50, 50);
+        enemy.maxHp = 1000; enemy.speed = 76; enemy.hitRadius = 35; enemy.setCircle(78, 50, 50);
       }
       enemy.hp = enemy.maxHp;
       enemy.setCollideWorldBounds(true).setBounce(0.15).setDepth(kind === 'boss' ? 5 : 4);
@@ -487,6 +497,11 @@ export class ArenaScene extends Phaser.Scene {
       if (!enemy.active) return;
       const angle = Phaser.Math.Angle.Between(enemy.x, enemy.y, this.player.x, this.player.y);
       const distance = Phaser.Math.Distance.Between(enemy.x, enemy.y, this.player.x, this.player.y);
+
+      if (enemy.kind === 'boss' && time < (enemy.phaseInvulnerableUntil ?? 0)) {
+        enemy.setVelocity(0).stop().setFrame(0);
+        return;
+      }
 
       if (enemy.kind === 'archer') {
         this.moveRangedEnemy(enemy, angle, distance);
@@ -501,6 +516,10 @@ export class ArenaScene extends Phaser.Scene {
       } else {
         this.physics.velocityFromRotation(angle, enemy.speed, enemy.body!.velocity);
       }
+      const moving = enemy.body!.velocity.lengthSq() > 16;
+      if (moving) enemy.play(`${enemy.kind}-walk`, true);
+      else enemy.stop().setFrame(0);
+      enemy.setFlipX(this.player.x < enemy.x);
     });
   }
 
@@ -582,12 +601,19 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private handleBossPhaseTransition(boss: Enemy, phase: 2 | 3): void {
+    const transitionStartedAt = this.time.now;
     boss.bossPhase = phase;
     boss.attackPending = false;
-    boss.nextActionAt = this.time.now + 1100;
+    boss.phaseInvulnerableUntil = transitionStartedAt + 1000;
+    boss.nextActionAt = transitionStartedAt + 1100;
     boss.setVelocity(0).setTint(phase === 3 ? 0xff9a64 : 0xff6f81);
+    const knockback = new Phaser.Math.Vector2(this.player.x - boss.x, this.player.y - boss.y);
+    if (knockback.lengthSq() === 0) knockback.set(-1, 0);
+    knockback.normalize().scale(820);
+    this.playerKnockbackUntil = transitionStartedAt + 420;
+    this.player.setVelocity(knockback.x, knockback.y);
     this.clearBossTelegraph();
-    const detail = phase === 2 ? '부채꼴 탄막 강화' : '최종 각성 · 전방위 탄막';
+    const detail = phase === 2 ? '1초 무적 · 부채꼴 탄막 강화' : '1초 무적 · 최종 각성 · 전방위 탄막';
     this.bossPhaseText.setText(`${phase}단계 각성\n${detail}`).setVisible(true).setAlpha(1).setScale(0.82);
     this.tweens.killTweensOf(this.bossPhaseText);
     this.tweens.add({
@@ -600,7 +626,7 @@ export class ArenaScene extends Phaser.Scene {
     });
     this.cameras.main.flash(180, phase === 3 ? 255 : 210, 70, 70, false);
     this.cameras.main.shake(260, phase === 3 ? 0.012 : 0.008);
-    this.time.delayedCall(380, () => boss.active && boss.clearTint());
+    this.time.delayedCall(1000, () => boss.active && boss.clearTint());
   }
 
   private updateBossHud(): void {
@@ -649,10 +675,16 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private fireEnemyProjectile(enemy: Enemy, angle: number, damage: number, speed: number): void {
-    const projectile = this.enemyProjectiles.create(enemy.x, enemy.y, 'enemyProjectile') as EnemyProjectile;
+    const isBossProjectile = enemy.kind === 'boss';
+    const texture = isBossProjectile ? 'fireball' : 'iceArrow';
+    const projectile = this.enemyProjectiles.create(enemy.x, enemy.y, texture, 0) as EnemyProjectile;
     projectile.damage = damage;
-    projectile.setCircle(7, 2, 2).setDepth(6);
-    if (enemy.kind === 'boss') projectile.setScale(1.35).setTint(0xff8e9b);
+    projectile.setRotation(angle).setDepth(6);
+    if (isBossProjectile) {
+      projectile.setDisplaySize(48, 48).setCircle(76, 52, 52).play('fireball-fly');
+    } else {
+      projectile.setDisplaySize(54, 22).setSize(150, 82).setOffset(53, 87).play('iceArrow-fly');
+    }
     this.physics.velocityFromRotation(angle, speed, projectile.body!.velocity);
     enemy.setTint(0xc5fbff);
     this.time.delayedCall(90, () => enemy.active && enemy.clearTint());
@@ -679,6 +711,7 @@ export class ArenaScene extends Phaser.Scene {
     this.enemies.getChildren().forEach((child) => {
       const enemy = child as Enemy;
       if (!enemy.active || now - enemy.lastHitAt < 220) return;
+      if (enemy.kind === 'boss' && now < (enemy.phaseInvulnerableUntil ?? 0)) return;
       const distance = Phaser.Math.Distance.Between(attackOrigin.x, attackOrigin.y, enemy.x, enemy.y);
       const enemyAngle = Phaser.Math.Angle.Between(attackOrigin.x, attackOrigin.y, enemy.x, enemy.y);
       const delta = Math.abs(Phaser.Math.Angle.Wrap(enemyAngle - facing));
@@ -692,14 +725,17 @@ export class ArenaScene extends Phaser.Scene {
         const critical = Math.random() < this.criticalChance;
         const damage = critical ? this.attackDamage * 2 : this.attackDamage;
         enemy.hp -= damage;
+        let phaseChanged = false;
         if (enemy.kind === 'boss') {
           const nextPhase = this.getBossPhase(enemy);
-          if (nextPhase > (enemy.bossPhase ?? 1)) this.handleBossPhaseTransition(enemy, nextPhase as 2 | 3);
+          if (nextPhase > (enemy.bossPhase ?? 1)) {
+            this.handleBossPhaseTransition(enemy, nextPhase as 2 | 3);
+            phaseChanged = true;
+          }
           this.updateBossHud();
         }
-        enemy.setTint(critical ? 0xffd76b : 0xffffff);
-        this.time.delayedCall(70, () => enemy.active && enemy.clearTint());
-        const force = enemy.kind === 'boss' ? 80 : 250;
+        if (!phaseChanged) this.flashEnemyHit(enemy, critical);
+        const force = enemy.kind === 'boss' ? 80 : enemy.kind === 'brute' ? 250 : 340;
         const knockback = new Phaser.Math.Vector2(enemy.x - this.player.x, enemy.y - this.player.y).normalize().scale(force);
         enemy.setVelocity(knockback.x, knockback.y);
         if (enemy.hp <= 0) {
@@ -711,6 +747,21 @@ export class ArenaScene extends Phaser.Scene {
           this.updateHud();
         }
       }
+    });
+  }
+
+  private flashEnemyHit(enemy: Enemy, critical: boolean): void {
+    this.tweens.killTweensOf(enemy);
+    enemy.setTint(critical ? 0xffd76b : 0xff8f8f).setAlpha(1);
+    this.tweens.add({
+      targets: enemy,
+      alpha: 0.25,
+      duration: 45,
+      yoyo: true,
+      repeat: 1,
+      onComplete: () => {
+        if (enemy.active) enemy.setAlpha(1).clearTint();
+      },
     });
   }
 
@@ -774,9 +825,8 @@ export class ArenaScene extends Phaser.Scene {
     const reducedDamage = Math.max(1, Math.round(amount * (1 - this.damageReduction)));
     this.hp = Math.max(0, this.hp - reducedDamage);
     this.invulnerableUntil = now + 650;
-    this.player.setTint(0xff6b78);
+    this.flashPlayerHit();
     this.cameras.main.shake(100, 0.007);
-    this.time.delayedCall(120, () => this.player.active && this.player.clearTint());
     this.updateHud();
     if (this.hp === 0) {
       this.clearBossTelegraph();
@@ -786,6 +836,24 @@ export class ArenaScene extends Phaser.Scene {
       this.bannerText.setText('귀환 실패').setAlpha(1);
       this.showDeathChoices();
     }
+  }
+
+  private flashPlayerHit(): void {
+    this.tweens.killTweensOf(this.player);
+    this.player.setTint(0xff6b78).setAlpha(1);
+    this.tweens.add({
+      targets: this.player,
+      alpha: 0.25,
+      duration: 55,
+      yoyo: true,
+      repeat: 2,
+      onComplete: () => {
+        if (!this.player.active) return;
+        this.player.setAlpha(1);
+        if (this.hp > 0) this.player.clearTint();
+        else this.player.setTint(0x4b4350);
+      },
+    });
   }
 
   private showDeathChoices(): void {
@@ -977,6 +1045,7 @@ export class ArenaScene extends Phaser.Scene {
     this.lastAttackAt = -1000;
     this.lastDashAt = -2000;
     this.invulnerableUntil = this.time.now + 1000;
+    this.playerKnockbackUntil = 0;
     this.transitionLockUntil = 0;
     this.roomCleared = false;
     this.transitioning = false;
@@ -1506,6 +1575,7 @@ export class ArenaScene extends Phaser.Scene {
       bossHp: boss ? Math.max(0, Math.ceil(boss.hp)) : null,
       bossMaxHp: boss?.maxHp ?? null,
       bossPhase: boss ? this.getBossPhase(boss) : null,
+      bossInvulnerable: boss ? this.time.now < (boss.phaseInvulnerableUntil ?? 0) : false,
       bossTelegraphActive: this.bossTelegraphActive,
       ashes: this.ashes,
       visitedRooms: this.visitedRooms.size,
@@ -1551,7 +1621,7 @@ export class ArenaScene extends Phaser.Scene {
     this.attackDamage = 34; this.attackCooldown = ATTACK_COOLDOWN; this.attackRange = 74; this.attackArcAngle = 0.92;
     this.moveSpeed = 260; this.dashSpeed = 620; this.dashCooldown = 1100; this.dashDuration = 240;
     this.roomRecovery = 0; this.lastCombatRecovery = undefined; this.criticalChance = 0; this.damageReduction = 0;
-    this.lastAttackAt = -1000; this.lastDashAt = -2000; this.invulnerableUntil = 0;
+    this.lastAttackAt = -1000; this.lastDashAt = -2000; this.invulnerableUntil = 0; this.playerKnockbackUntil = 0;
     this.transitionLockUntil = 0; this.roomCleared = false; this.transitioning = false; this.runFinished = false; this.gameStarted = false;
     this.awaitingUpgrade = false; this.awaitingSpecial = false; this.awaitingPermanentUpgrade = false;
     this.acquiredUpgrades = new Map<UpgradeId, number>(); this.permanentUpgradeLevels = new Map<PermanentUpgradeId, number>();
@@ -1576,11 +1646,25 @@ export class ArenaScene extends Phaser.Scene {
     this.physics.world.setBounds(42, 63, GAME_WIDTH - 84, GAME_HEIGHT - 126);
   }
 
-  private createTextures(): void {
-    if (this.textures.exists('enemyProjectile')) return;
-    const graphics = this.make.graphics({ x: 0, y: 0 });
-    graphics.fillStyle(0x9cebf4).fillCircle(9, 9, 7);
-    graphics.lineStyle(2, 0xe4fdff).strokeCircle(9, 9, 7);
-    graphics.generateTexture('enemyProjectile', 18, 18).destroy();
+  private createAnimations(): void {
+    const characterRates: Record<EnemyKind | 'player', number> = {
+      player: 10, stalker: 12, brute: 7, archer: 9, boss: 7,
+    };
+    Object.entries(characterRates).forEach(([key, frameRate]) => {
+      const animationKey = `${key}-walk`;
+      if (this.anims.exists(animationKey)) return;
+      this.anims.create({
+        key: animationKey,
+        frames: this.anims.generateFrameNumbers(key, { start: 0, end: 3 }),
+        frameRate,
+        repeat: -1,
+      });
+    });
+    if (!this.anims.exists('iceArrow-fly')) {
+      this.anims.create({ key: 'iceArrow-fly', frames: this.anims.generateFrameNumbers('iceArrow', { start: 0, end: 3 }), frameRate: 14, repeat: -1 });
+    }
+    if (!this.anims.exists('fireball-fly')) {
+      this.anims.create({ key: 'fireball-fly', frames: this.anims.generateFrameNumbers('fireball', { start: 0, end: 3 }), frameRate: 15, repeat: -1 });
+    }
   }
 }

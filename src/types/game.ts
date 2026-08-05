@@ -4,7 +4,7 @@ export type Direction = 'up' | 'down' | 'left' | 'right';
 export type EnemyKind = 'stalker' | 'brute' | 'archer' | 'boss';
 export type RoomType = 'combat' | 'healing' | 'shop' | 'boss';
 
-export type Enemy = Phaser.Physics.Arcade.Image & {
+export type Enemy = Phaser.Physics.Arcade.Sprite & {
   hp: number;
   maxHp: number;
   speed: number;
@@ -15,6 +15,7 @@ export type Enemy = Phaser.Physics.Arcade.Image & {
   strafeDirection: number;
   kind: EnemyKind;
   hitRadius: number;
+  phaseInvulnerableUntil?: number;
 };
 
 export type PermanentUpgradeId = Exclude<UpgradeId, 'dashCooldown' | 'dashDuration'>;
@@ -29,7 +30,7 @@ export type PermanentUpgradeDefinition = {
   color: number;
 };
 
-export type EnemyProjectile = Phaser.Physics.Arcade.Image & {
+export type EnemyProjectile = Phaser.Physics.Arcade.Sprite & {
   damage: number;
 };
 
