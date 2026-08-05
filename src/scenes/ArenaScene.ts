@@ -492,7 +492,7 @@ export class ArenaScene extends Phaser.Scene {
     addEffectPreview(790, 510, '플레이어 피격 · 충격', 'playerHit', 0xd27b8d);
     addEffectPreview(1090, 510, '대시 · 샤악', 'dash', 0x8ac9da);
     addEffectPreview(340, 568, '추적자 사망 · 으윽', 'stalkerDeath', 0xc87f72, 250);
-    addEffectPreview(640, 568, '골렘 사망 · 쿠궁', 'bruteDeath', 0xb7a184, 250);
+    addEffectPreview(640, 568, '골렘 사망 · 불꽃 소멸', 'bruteDeath', 0xb7a184, 250);
     addEffectPreview(940, 568, '원거리 사망 · 아악', 'archerDeath', 0xb88bc8, 250);
     const closeButton = this.add.rectangle(GAME_WIDTH / 2, 650, 300, 52, 0x436b68, 1)
       .setStrokeStyle(3, 0x91e3bd, 1).setInteractive({ useHandCursor: true });

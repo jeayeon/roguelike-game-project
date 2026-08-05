@@ -102,12 +102,12 @@ export class AdaptiveMusic {
     } else if (effect === 'stalkerDeath') {
       this.scheduleVocalDeath(at, 'male');
     } else if (effect === 'bruteDeath') {
-      this.scheduleStoneCollapse(at);
+      this.scheduleBlazeDeath(at);
     } else if (effect === 'archerDeath') {
       this.scheduleVocalDeath(at, 'female');
     } else if (effect === 'bossDeath') {
-      this.scheduleStoneCollapse(at);
-      this.scheduleEffectTone(84, 34, at + 0.04, 0.72, 0.3, 'sawtooth');
+      this.scheduleBlazeDeath(at);
+      this.scheduleEffectTone(82, 33, at + 0.05, 0.76, 0.26, 'triangle');
     } else if (effect === 'playerHit') {
       this.schedulePlayerImpact(at);
     } else if (effect === 'roomClear') {
@@ -318,48 +318,61 @@ export class AdaptiveMusic {
   private scheduleVocalDeath(at: number, voice: 'male' | 'female'): void {
     if (!this.context || !this.effects) return;
     const female = voice === 'female';
-    const duration = female ? 0.5 : 0.56;
-    const fundamental = this.context.createOscillator();
-    const overtone = this.context.createOscillator();
-    const voiceGain = this.context.createGain();
-    const formantLow = this.context.createBiquadFilter();
-    const formantHigh = this.context.createBiquadFilter();
+    const duration = female ? 0.62 : 0.58;
+    const frameCount = Math.ceil(this.context.sampleRate * duration);
+    const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate);
+    const samples = buffer.getChannelData(0);
+    let phase = 0;
+    let jitter = 0;
+    for (let index = 0; index < frameCount; index += 1) {
+      const progress = index / frameCount;
+      const basePitch = female
+        ? (progress < 0.2 ? 330 + progress * 540 : 438 * Math.pow(0.48, (progress - 0.2) / 0.8))
+        : 132 * Math.pow(0.58, progress);
+      jitter = jitter * 0.97 + (Math.random() * 2 - 1) * 0.03;
+      const vibrato = Math.sin(progress * Math.PI * (female ? 15 : 11)) * (female ? 0.018 : 0.012);
+      phase += basePitch * (1 + vibrato + jitter * 0.026) / this.context.sampleRate;
+      phase -= Math.floor(phase);
+      const glottal = Math.sin(Math.PI * 2 * phase)
+        + Math.sin(Math.PI * 4 * phase) * 0.38
+        + Math.sin(Math.PI * 6 * phase) * 0.16
+        + Math.sin(Math.PI * 8 * phase) * 0.07;
+      const attack = Math.min(1, progress / (female ? 0.045 : 0.075));
+      const falloff = Math.pow(1 - progress, female ? 0.82 : 1.05);
+      const secondPush = female
+        ? 0.72 + Math.exp(-Math.pow((progress - 0.28) / 0.13, 2)) * 0.35
+        : 0.82 + Math.exp(-Math.pow((progress - 0.18) / 0.14, 2)) * 0.22;
+      const closure = progress > 0.72 ? Math.max(0, 1 - (progress - 0.72) / 0.28) : 1;
+      samples[index] = glottal * attack * falloff * secondPush * closure * 0.48;
+    }
+    const source = this.context.createBufferSource();
     const output = this.context.createGain();
-    const startPitch = female ? 430 : 142;
-    const endPitch = female ? 245 : 76;
-
-    fundamental.type = female ? 'sawtooth' : 'triangle';
-    overtone.type = 'sawtooth';
-    fundamental.frequency.setValueAtTime(startPitch, at);
-    fundamental.frequency.exponentialRampToValueAtTime(endPitch, at + duration);
-    overtone.frequency.setValueAtTime(startPitch * 2.01, at);
-    overtone.frequency.exponentialRampToValueAtTime(endPitch * 1.94, at + duration);
-    voiceGain.gain.setValueAtTime(0.0001, at);
-    voiceGain.gain.exponentialRampToValueAtTime(female ? 0.16 : 0.2, at + (female ? 0.035 : 0.055));
-    voiceGain.gain.setValueAtTime(female ? 0.14 : 0.18, at + duration * 0.42);
-    voiceGain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
-    formantLow.type = 'bandpass';
-    formantLow.Q.value = female ? 1.6 : 1.25;
-    formantLow.frequency.setValueAtTime(female ? 920 : 520, at);
-    formantLow.frequency.exponentialRampToValueAtTime(female ? 690 : 390, at + duration);
-    formantHigh.type = 'bandpass';
-    formantHigh.Q.value = female ? 2.2 : 1.7;
-    formantHigh.frequency.setValueAtTime(female ? 2450 : 1180, at);
-    formantHigh.frequency.exponentialRampToValueAtTime(female ? 1720 : 820, at + duration);
-    output.gain.value = female ? 0.9 : 1;
-
-    fundamental.connect(voiceGain);
-    overtone.connect(voiceGain);
-    voiceGain.connect(formantLow);
-    voiceGain.connect(formantHigh);
-    formantLow.connect(output);
-    formantHigh.connect(output);
+    source.buffer = buffer;
+    const formants = female
+      ? [{ frequency: 820, q: 2.1, gain: 0.7 }, { frequency: 1380, q: 2.5, gain: 0.48 }, { frequency: 2650, q: 3.1, gain: 0.2 }]
+      : [{ frequency: 390, q: 1.8, gain: 0.78 }, { frequency: 920, q: 2.2, gain: 0.48 }, { frequency: 2150, q: 2.8, gain: 0.12 }];
+    for (const formant of formants) {
+      const filter = this.context.createBiquadFilter();
+      const formantGain = this.context.createGain();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(formant.frequency, at);
+      filter.frequency.exponentialRampToValueAtTime(formant.frequency * (female ? 0.82 : 0.76), at + duration);
+      filter.Q.value = formant.q;
+      formantGain.gain.value = formant.gain;
+      source.connect(filter);
+      filter.connect(formantGain);
+      formantGain.connect(output);
+    }
+    output.gain.value = female ? 0.82 : 0.95;
     output.connect(this.effects);
-    fundamental.start(at);
-    overtone.start(at);
-    fundamental.stop(at + duration + 0.02);
-    overtone.stop(at + duration + 0.02);
-    this.scheduleBreathNoise(at + (female ? 0.015 : 0.07), duration * 0.82, female ? 2300 : 760, female ? 0.09 : 0.065);
+    source.start(at);
+    source.stop(at + duration);
+    this.scheduleBreathNoise(
+      at + duration * (female ? 0.58 : 0.62),
+      duration * (female ? 0.38 : 0.34),
+      female ? 2600 : 1050,
+      female ? 0.11 : 0.08,
+    );
   }
 
   private scheduleBreathNoise(at: number, duration: number, frequency: number, volume: number): void {
@@ -388,37 +401,50 @@ export class AdaptiveMusic {
     source.stop(at + duration);
   }
 
-  private scheduleStoneCollapse(at: number): void {
-    this.scheduleEffectTone(105, 42, at, 0.42, 0.3, 'triangle');
-    this.scheduleEffectTone(72, 31, at + 0.12, 0.48, 0.32, 'sawtooth');
-    this.scheduleStoneImpactNoise(at, 0.22, 520, 0.24);
-    this.scheduleStoneImpactNoise(at + 0.11, 0.34, 310, 0.22);
-  }
-
-  private scheduleStoneImpactNoise(at: number, duration: number, cutoff: number, volume: number): void {
+  private scheduleBlazeDeath(at: number): void {
     if (!this.context || !this.effects) return;
+    const duration = 0.72;
     const frameCount = Math.ceil(this.context.sampleRate * duration);
     const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate);
     const samples = buffer.getChannelData(0);
+    let rasp = 0;
     for (let index = 0; index < frameCount; index += 1) {
       const progress = index / frameCount;
-      const debris = Math.random() < 0.035 ? (Math.random() * 2 - 1) * 1.8 : Math.random() * 0.7 - 0.35;
-      samples[index] = debris * Math.pow(1 - progress, 1.45);
+      const crackle = Math.random() < 0.018 * (1 - progress) ? (Math.random() * 2 - 1) * 2.1 : 0;
+      rasp = rasp * 0.72 + (Math.random() * 2 - 1) * 0.28;
+      const envelope = Math.min(1, progress / 0.04) * Math.pow(1 - progress, 0.72);
+      samples[index] = (rasp * 0.82 + crackle) * envelope;
     }
     const source = this.context.createBufferSource();
-    const filter = this.context.createBiquadFilter();
+    const raspFilter = this.context.createBiquadFilter();
+    const bodyFilter = this.context.createBiquadFilter();
+    const raspGain = this.context.createGain();
+    const bodyGain = this.context.createGain();
     const gain = this.context.createGain();
     source.buffer = buffer;
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(cutoff, at);
-    filter.frequency.exponentialRampToValueAtTime(Math.max(90, cutoff * 0.42), at + duration);
-    gain.gain.setValueAtTime(volume, at);
+    raspFilter.type = 'bandpass';
+    raspFilter.Q.value = 0.85;
+    raspFilter.frequency.setValueAtTime(3200, at);
+    raspFilter.frequency.exponentialRampToValueAtTime(680, at + duration);
+    bodyFilter.type = 'lowpass';
+    bodyFilter.frequency.setValueAtTime(1350, at);
+    bodyFilter.frequency.exponentialRampToValueAtTime(240, at + duration);
+    raspGain.gain.value = 0.72;
+    bodyGain.gain.value = 0.48;
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.3, at + 0.045);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
-    source.connect(filter);
-    filter.connect(gain);
+    source.connect(raspFilter);
+    source.connect(bodyFilter);
+    raspFilter.connect(raspGain);
+    bodyFilter.connect(bodyGain);
+    raspGain.connect(gain);
+    bodyGain.connect(gain);
     gain.connect(this.effects);
     source.start(at);
     source.stop(at + duration);
+    this.scheduleEffectTone(390, 118, at + 0.025, 0.64, 0.12, 'sawtooth');
+    this.scheduleEffectTone(205, 72, at + 0.07, 0.6, 0.1, 'triangle');
   }
 
   private scheduleBladeImpact(at: number): void {
