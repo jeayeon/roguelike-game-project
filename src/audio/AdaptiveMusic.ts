@@ -85,7 +85,7 @@ export class AdaptiveMusic {
     if (effect === 'attack') {
       this.scheduleSwordWhoosh(at);
     } else if (effect === 'dash') {
-      this.scheduleEffectTone(150, 720, at, 0.2, 0.2, 'triangle');
+      this.scheduleDashWind(at);
     } else if (effect === 'enemyHit') {
       this.scheduleBladeImpact(at);
     } else if (effect === 'enemyDeath') {
@@ -297,13 +297,14 @@ export class AdaptiveMusic {
 
   private scheduleBladeImpact(at: number): void {
     if (!this.context || !this.effects) return;
-    const duration = 0.14;
+    const duration = 0.17;
     const frameCount = Math.ceil(this.context.sampleRate * duration);
     const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate);
     const samples = buffer.getChannelData(0);
     for (let index = 0; index < frameCount; index += 1) {
       const progress = index / frameCount;
-      const envelope = Math.pow(1 - progress, 2.4);
+      const attack = Math.min(1, progress / 0.07);
+      const envelope = attack * Math.pow(1 - progress, 1.7);
       samples[index] = (Math.random() * 2 - 1) * envelope;
     }
     const source = this.context.createBufferSource();
@@ -311,18 +312,47 @@ export class AdaptiveMusic {
     const gain = this.context.createGain();
     source.buffer = buffer;
     filter.type = 'bandpass';
-    filter.Q.setValueAtTime(0.72, at);
-    filter.frequency.setValueAtTime(2900, at);
-    filter.frequency.exponentialRampToValueAtTime(850, at + duration);
+    filter.Q.setValueAtTime(0.5, at);
+    filter.frequency.setValueAtTime(5600, at);
+    filter.frequency.exponentialRampToValueAtTime(2100, at + duration);
     gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(0.36, at + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.42, at + 0.018);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
     source.connect(filter);
     filter.connect(gain);
     gain.connect(this.effects);
     source.start(at);
     source.stop(at + duration);
-    this.scheduleEffectTone(125, 72, at, 0.075, 0.07, 'triangle');
+  }
+
+  private scheduleDashWind(at: number): void {
+    if (!this.context || !this.effects) return;
+    const duration = 0.27;
+    const frameCount = Math.ceil(this.context.sampleRate * duration);
+    const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate);
+    const samples = buffer.getChannelData(0);
+    for (let index = 0; index < frameCount; index += 1) {
+      const progress = index / frameCount;
+      const envelope = Math.pow(Math.sin(Math.PI * progress), 0.72) * Math.pow(1 - progress, 0.18);
+      samples[index] = (Math.random() * 2 - 1) * envelope;
+    }
+    const source = this.context.createBufferSource();
+    const filter = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    source.buffer = buffer;
+    filter.type = 'bandpass';
+    filter.Q.setValueAtTime(0.42, at);
+    filter.frequency.setValueAtTime(720, at);
+    filter.frequency.exponentialRampToValueAtTime(4300, at + 0.1);
+    filter.frequency.exponentialRampToValueAtTime(1450, at + duration);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.34, at + 0.055);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.effects);
+    source.start(at);
+    source.stop(at + duration);
   }
 
   private schedulePlayerImpact(at: number): void {

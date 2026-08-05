@@ -468,21 +468,27 @@ export class ArenaScene extends Phaser.Scene {
     };
     addVolumeRow('배경음악', 300, 'musicVolume');
     addVolumeRow('효과음', 410, 'effectsVolume');
-    children.push(this.add.text(GAME_WIDTH / 2, 475, '피격음 미리 듣기', {
+    children.push(this.add.text(GAME_WIDTH / 2, 475, '전투 효과음 미리 듣기', {
       fontSize: '17px', color: '#bcaec3', fontStyle: 'bold', padding: { x: 4, y: 3 },
     }).setOrigin(0.5));
-    const enemyHitPreview = this.add.rectangle(500, 520, 230, 52, 0x49394f, 1)
+    const enemyHitPreview = this.add.rectangle(360, 520, 230, 52, 0x49394f, 1)
       .setStrokeStyle(2, 0xd99a72, 1).setInteractive({ useHandCursor: true });
     enemyHitPreview.on('pointerdown', () => this.music.playEffect('enemyHit'));
-    const playerHitPreview = this.add.rectangle(780, 520, 230, 52, 0x49394f, 1)
+    const playerHitPreview = this.add.rectangle(640, 520, 230, 52, 0x49394f, 1)
       .setStrokeStyle(2, 0xd27b8d, 1).setInteractive({ useHandCursor: true });
     playerHitPreview.on('pointerdown', () => this.music.playEffect('playerHit'));
-    children.push(enemyHitPreview, playerHitPreview);
-    children.push(this.add.text(500, 520, '적 베임음 · 퓨슉', {
+    const dashPreview = this.add.rectangle(920, 520, 230, 52, 0x49394f, 1)
+      .setStrokeStyle(2, 0x8ac9da, 1).setInteractive({ useHandCursor: true });
+    dashPreview.on('pointerdown', () => this.music.playEffect('dash'));
+    children.push(enemyHitPreview, playerHitPreview, dashPreview);
+    children.push(this.add.text(360, 520, '적 베임음 · 퓨슉', {
       fontSize: '18px', color: '#ffe0c7', fontStyle: 'bold', padding: { x: 4, y: 3 },
     }).setOrigin(0.5));
-    children.push(this.add.text(780, 520, '플레이어 피격음 · 충격', {
+    children.push(this.add.text(640, 520, '플레이어 피격음 · 충격', {
       fontSize: '18px', color: '#ffd4dc', fontStyle: 'bold', padding: { x: 4, y: 3 },
+    }).setOrigin(0.5));
+    children.push(this.add.text(920, 520, '대시음 · 샤악', {
+      fontSize: '18px', color: '#d4f5ff', fontStyle: 'bold', padding: { x: 4, y: 3 },
     }).setOrigin(0.5));
     const closeButton = this.add.rectangle(GAME_WIDTH / 2, 615, 300, 58, 0x436b68, 1)
       .setStrokeStyle(3, 0x91e3bd, 1).setInteractive({ useHandCursor: true });
