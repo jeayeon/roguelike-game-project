@@ -10,6 +10,13 @@ import {
 } from '../config/game';
 import { createRandomRoomLayout } from '../data/rooms';
 import { getPermanentUpgradeCost, PERMANENT_UPGRADES } from '../data/permanentUpgrades';
+import {
+  clearRogueliteProgress,
+  DEFAULT_SETTINGS,
+  loadRogueliteProgress,
+  saveRogueliteProgress,
+  type GameSettings,
+} from '../data/persistence';
 import { UPGRADES } from '../data/upgrades';
 import type {
   Direction,
@@ -44,6 +51,7 @@ const ROOM_PORTAL_STYLE: Record<RoomType, { fill: number; stroke: number; text: 
 
 const ATTACK_ORIGIN_OFFSET = 18;
 const BOSS_WALL_VOLLEY_INTERVAL = 3200;
+const BOSS_WALL_TELEGRAPH_DURATION = 900;
 
 export class ArenaScene extends Phaser.Scene {
   private rooms: RoomDefinition[] = [];
@@ -71,6 +79,8 @@ export class ArenaScene extends Phaser.Scene {
   private ashes = 0;
   private roomIndex = 0;
   private lastAttackAt = -1000;
+  private playerAttackingUntil = 0;
+  private currentAttackFacing = 0;
   private lastDashAt = -2000;
   private invulnerableUntil = 0;
   private playerKnockbackUntil = 0;
@@ -81,6 +91,8 @@ export class ArenaScene extends Phaser.Scene {
   private gameStarted = false;
   private countdownActive = false;
   private countdownValue = 0;
+  private gamePaused = false;
+  private settings: GameSettings = { ...DEFAULT_SETTINGS };
   private awaitingUpgrade = false;
   private awaitingSpecial = false;
   private awaitingPermanentUpgrade = false;
@@ -96,6 +108,9 @@ export class ArenaScene extends Phaser.Scene {
   private permanentOverlay?: Phaser.GameObjects.Container;
   private permanentPurchaseMessage = '';
   private startOverlay?: Phaser.GameObjects.Container;
+  private pauseOverlay?: Phaser.GameObjects.Container;
+  private settingsOverlay?: Phaser.GameObjects.Container;
+  private settingsReturnTo: 'start' | 'pause' = 'start';
   private countdownText?: Phaser.GameObjects.Text;
   private music = new AdaptiveMusic();
   private clearedRooms = new Set<number>();
@@ -116,13 +131,21 @@ export class ArenaScene extends Phaser.Scene {
   private bossWarningCircle!: Phaser.GameObjects.Arc;
   private bossWarningText!: Phaser.GameObjects.Text;
   private bossTelegraphGraphics!: Phaser.GameObjects.Graphics;
+  private bossWallTelegraphGraphics!: Phaser.GameObjects.Graphics;
+  private bossWallWarningText!: Phaser.GameObjects.Text;
   private bossPhaseText!: Phaser.GameObjects.Text;
   private bossTelegraphActive = false;
   private nextBossWallVolleyAt = Number.POSITIVE_INFINITY;
   private bossWallVolleyFlipped = false;
+  private pendingBossWallVolley = false;
+  private pendingBossWallVolleyFlipped = false;
   private debugInvincible = false;
   private exitPortals!: Record<Direction, Phaser.GameObjects.Arc>;
   private exitLabels!: Record<Direction, Phaser.GameObjects.Text>;
+  private readonly flushPersistentProgress = (): void => this.persistProgress();
+  private readonly flushProgressWhenHidden = (): void => {
+    if (document.visibilityState === 'hidden') this.persistProgress();
+  };
 
   constructor() {
     super('arena');
@@ -134,6 +157,7 @@ export class ArenaScene extends Phaser.Scene {
     ['player', 'stalker', 'brute', 'archer', 'boss'].forEach((key) => {
       this.load.spritesheet(key, `${walkAssetPath}/${key}-walk.png`, { frameWidth: 256, frameHeight: 256 });
     });
+    this.load.spritesheet('playerAttack', `${characterAssetPath}/player-attack.png`, { frameWidth: 256, frameHeight: 256 });
     const projectileAssetPath = `${import.meta.env.BASE_URL}assets/projectiles`;
     this.load.spritesheet('iceArrow', `${projectileAssetPath}/ice-arrow.png`, { frameWidth: 256, frameHeight: 256 });
     this.load.spritesheet('fireball', `${projectileAssetPath}/fireball.png`, { frameWidth: 256, frameHeight: 256 });
@@ -141,7 +165,14 @@ export class ArenaScene extends Phaser.Scene {
 
   create(): void {
     this.resetRunState();
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.music.stop());
+    window.addEventListener('pagehide', this.flushPersistentProgress);
+    document.addEventListener('visibilitychange', this.flushProgressWhenHidden);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.persistProgress();
+      window.removeEventListener('pagehide', this.flushPersistentProgress);
+      document.removeEventListener('visibilitychange', this.flushProgressWhenHidden);
+      this.music.stop();
+    });
     this.createAnimations();
     this.cameras.main.setBackgroundColor('#120f19');
 
@@ -152,6 +183,7 @@ export class ArenaScene extends Phaser.Scene {
     this.player = this.physics.add.sprite(170, GAME_HEIGHT / 2, 'player', 0);
     this.player.setDisplaySize(72, 72).setCircle(70, 58, 58)
       .setCollideWorldBounds(true).setDepth(6).setVisible(false);
+    this.applyCharacterOutline(this.player, 0xffd17a, 1.4);
     this.enemies = this.physics.add.group();
     this.enemyProjectiles = this.physics.add.group();
     this.physics.add.collider(this.player, this.enemies, this.onPlayerHit, undefined, this);
@@ -171,6 +203,16 @@ export class ArenaScene extends Phaser.Scene {
       else if (this.runFinished) this.scene.restart();
     });
     this.input.keyboard!.on('keydown', (event: KeyboardEvent) => {
+      if (this.settingsOverlay && (event.key === 'Escape' || event.key.toLowerCase() === 'p')) {
+        this.closeSettings();
+        return;
+      }
+      if (event.key.toLowerCase() === 'p' || (event.key === 'Escape' && this.gameStarted && !this.awaitingSpecial && !this.awaitingPermanentUpgrade)) {
+        this.togglePause();
+        return;
+      }
+      if (this.settingsOverlay) return;
+      if (this.gamePaused) return;
       if (!this.gameStarted && event.key === 'Enter') {
         this.beginGame();
         return;
@@ -197,6 +239,7 @@ export class ArenaScene extends Phaser.Scene {
     this.bossWarningCircle = this.add.circle(0, 0, 58, 0xff596d, 0.12)
       .setStrokeStyle(5, 0xff8090, 1).setVisible(false).setDepth(7);
     this.bossTelegraphGraphics = this.add.graphics().setDepth(7);
+    this.bossWallTelegraphGraphics = this.add.graphics().setDepth(7);
     this.createExitPortals();
 
     this.bossHudGraphics = this.add.graphics().setDepth(24);
@@ -211,6 +254,10 @@ export class ArenaScene extends Phaser.Scene {
       fontSize: '42px', color: '#ffbf78', fontStyle: 'bold', align: 'center',
       stroke: '#3b1119', strokeThickness: 8, padding: { x: 12, y: 10 },
     }).setOrigin(0.5).setVisible(false).setDepth(30);
+    this.bossWallWarningText = this.add.text(GAME_WIDTH / 2, 165, '', {
+      fontSize: '21px', color: '#ffca87', fontStyle: 'bold', align: 'center',
+      stroke: '#35131b', strokeThickness: 5, padding: { x: 8, y: 6 },
+    }).setOrigin(0.5).setVisible(false).setDepth(25);
 
     this.hpText = this.add.text(18, 14, '', {
       fontSize: '22px', color: '#f7ead3', fontStyle: 'bold', padding: { x: 8, y: 8 },
@@ -238,6 +285,8 @@ export class ArenaScene extends Phaser.Scene {
       fontSize: '15px', color: '#b7abbf', fontStyle: 'bold',
     }).setOrigin(1, 0).setDepth(22);
 
+    this.updateBuildText();
+    this.updateHud();
     this.time.addEvent({ delay: 500, loop: true, callback: () => this.publishAccessibleStatus() });
     this.showStartScreen();
     if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('debugAutoStart') === '1') {
@@ -260,6 +309,13 @@ export class ArenaScene extends Phaser.Scene {
         fontSize: '20px', color: '#bcaec3', align: 'center', lineSpacing: 12,
         backgroundColor: '#17131de6', padding: { x: 28, y: 20 },
       }).setOrigin(0.5));
+    const permanentLevelTotal = [...this.permanentUpgradeLevels.values()]
+      .reduce((total, level) => total + level, 0);
+    children.push(this.add.text(GAME_WIDTH / 2, 430,
+      `저장된 영구 진행 · 재 ${this.ashes} · 화로 강화 ${permanentLevelTotal}단계`, {
+        fontSize: '18px', color: '#91e3bd', fontStyle: 'bold',
+        backgroundColor: '#16241fe6', padding: { x: 14, y: 8 },
+      }).setOrigin(0.5));
     const startButton = this.add.rectangle(GAME_WIDTH / 2, 505, 330, 74, 0x6f344f, 1)
       .setStrokeStyle(4, 0xf7c86a, 1).setInteractive({ useHandCursor: true });
     startButton.on('pointerover', () => startButton.setFillStyle(0x8a405f, 1));
@@ -272,12 +328,21 @@ export class ArenaScene extends Phaser.Scene {
     children.push(this.add.text(GAME_WIDTH / 2, 565, '버튼 클릭 또는 ENTER', {
       fontSize: '16px', color: '#91869a', padding: { x: 4, y: 3 },
     }).setOrigin(0.5));
+    const settingsButton = this.add.rectangle(GAME_WIDTH / 2, 625, 240, 48, 0x302837, 1)
+      .setStrokeStyle(2, 0x9c8ba8, 1).setInteractive({ useHandCursor: true });
+    settingsButton.on('pointerover', () => settingsButton.setFillStyle(0x44384d, 1));
+    settingsButton.on('pointerout', () => settingsButton.setFillStyle(0x302837, 1));
+    settingsButton.on('pointerdown', () => this.openSettings('start'));
+    children.push(settingsButton);
+    children.push(this.add.text(GAME_WIDTH / 2, 625, '설정', {
+      fontSize: '19px', color: '#ddd0e3', fontStyle: 'bold', padding: { x: 5, y: 4 },
+    }).setOrigin(0.5));
     this.startOverlay = this.add.container(0, 0, children).setDepth(200);
     this.publishAccessibleStatus();
   }
 
   private beginGame(): void {
-    if (this.gameStarted || this.countdownActive) return;
+    if (this.gameStarted || this.countdownActive || this.settingsOverlay) return;
     this.countdownActive = true;
     this.countdownValue = 3;
     this.startOverlay?.destroy(true);
@@ -301,6 +366,121 @@ export class ArenaScene extends Phaser.Scene {
         this.finishGameStart();
       },
     });
+    this.publishAccessibleStatus();
+  }
+
+  private togglePause(): void {
+    if (!this.gameStarted || this.countdownActive || this.hp <= 0 || this.runFinished || this.awaitingPermanentUpgrade) return;
+    if (this.gamePaused) this.resumeGame();
+    else this.pauseGame();
+  }
+
+  private pauseGame(): void {
+    if (this.gamePaused) return;
+    this.gamePaused = true;
+    this.physics.world.pause();
+    this.time.paused = true;
+    this.tweens.pauseAll();
+    this.anims.pauseAll();
+    const children: Phaser.GameObjects.GameObject[] = [];
+    children.push(this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x09070d, 0.88).setInteractive());
+    children.push(this.add.text(GAME_WIDTH / 2, 205, '일시 정지', {
+      fontSize: '48px', color: '#f7c86a', fontStyle: 'bold', stroke: '#3a1d2d', strokeThickness: 7,
+      padding: { x: 10, y: 8 },
+    }).setOrigin(0.5));
+    const resumeButton = this.add.rectangle(GAME_WIDTH / 2, 335, 320, 62, 0x436b68, 1)
+      .setStrokeStyle(3, 0x91e3bd, 1).setInteractive({ useHandCursor: true });
+    resumeButton.on('pointerdown', () => this.resumeGame());
+    children.push(resumeButton);
+    children.push(this.add.text(GAME_WIDTH / 2, 335, '계속하기', {
+      fontSize: '23px', color: '#e8fff3', fontStyle: 'bold', padding: { x: 6, y: 5 },
+    }).setOrigin(0.5));
+    const settingsButton = this.add.rectangle(GAME_WIDTH / 2, 430, 320, 62, 0x4b3856, 1)
+      .setStrokeStyle(3, 0xbca5cb, 1).setInteractive({ useHandCursor: true });
+    settingsButton.on('pointerdown', () => this.openSettings('pause'));
+    children.push(settingsButton);
+    children.push(this.add.text(GAME_WIDTH / 2, 430, '음량 설정', {
+      fontSize: '23px', color: '#f0e2f5', fontStyle: 'bold', padding: { x: 6, y: 5 },
+    }).setOrigin(0.5));
+    children.push(this.add.text(GAME_WIDTH / 2, 505, 'P 또는 ESC로 계속', {
+      fontSize: '16px', color: '#a99caf', padding: { x: 4, y: 3 },
+    }).setOrigin(0.5));
+    this.pauseOverlay = this.add.container(0, 0, children).setDepth(220);
+    this.publishAccessibleStatus();
+  }
+
+  private resumeGame(): void {
+    if (!this.gamePaused) return;
+    this.settingsOverlay?.destroy(true);
+    this.settingsOverlay = undefined;
+    this.pauseOverlay?.destroy(true);
+    this.pauseOverlay = undefined;
+    this.gamePaused = false;
+    this.time.paused = false;
+    this.physics.world.resume();
+    this.tweens.resumeAll();
+    this.anims.resumeAll();
+    this.publishAccessibleStatus();
+  }
+
+  private openSettings(returnTo: 'start' | 'pause'): void {
+    this.settingsReturnTo = returnTo;
+    if (returnTo === 'start') this.startOverlay?.setVisible(false);
+    else this.pauseOverlay?.setVisible(false);
+    this.renderSettings();
+  }
+
+  private renderSettings(): void {
+    this.settingsOverlay?.destroy(true);
+    const children: Phaser.GameObjects.GameObject[] = [];
+    children.push(this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x09070d, 0.96).setInteractive());
+    children.push(this.add.text(GAME_WIDTH / 2, 170, '설정', {
+      fontSize: '44px', color: '#f7c86a', fontStyle: 'bold', padding: { x: 9, y: 7 },
+    }).setOrigin(0.5));
+    const addVolumeRow = (label: string, y: number, key: keyof GameSettings): void => {
+      const value = this.settings[key];
+      children.push(this.add.text(455, y, label, {
+        fontSize: '23px', color: '#e8dbe9', fontStyle: 'bold', padding: { x: 5, y: 4 },
+      }).setOrigin(1, 0.5));
+      const minus = this.add.rectangle(520, y, 54, 48, 0x49394f, 1).setStrokeStyle(2, 0xa893b1, 1).setInteractive({ useHandCursor: true });
+      const plus = this.add.rectangle(760, y, 54, 48, 0x49394f, 1).setStrokeStyle(2, 0xa893b1, 1).setInteractive({ useHandCursor: true });
+      minus.on('pointerdown', () => this.adjustVolume(key, -0.1));
+      plus.on('pointerdown', () => this.adjustVolume(key, 0.1));
+      children.push(minus, plus);
+      children.push(this.add.text(520, y, '−', { fontSize: '28px', color: '#fff2ce' }).setOrigin(0.5));
+      children.push(this.add.text(760, y, '+', { fontSize: '28px', color: '#fff2ce' }).setOrigin(0.5));
+      children.push(this.add.rectangle(640, y, 160, 18, 0x241c2a, 1).setStrokeStyle(2, 0x66556e, 1));
+      if (value > 0) children.push(this.add.rectangle(560 + value * 80, y, value * 160, 14, 0x79c7c3, 1).setOrigin(1, 0.5));
+      children.push(this.add.text(640, y - 35, `${Math.round(value * 100)}%`, {
+        fontSize: '17px', color: '#bfe8e1', fontStyle: 'bold', padding: { x: 3, y: 2 },
+      }).setOrigin(0.5));
+    };
+    addVolumeRow('배경음악', 300, 'musicVolume');
+    addVolumeRow('효과음', 410, 'effectsVolume');
+    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 555, 300, 60, 0x436b68, 1)
+      .setStrokeStyle(3, 0x91e3bd, 1).setInteractive({ useHandCursor: true });
+    closeButton.on('pointerdown', () => this.closeSettings());
+    children.push(closeButton);
+    children.push(this.add.text(GAME_WIDTH / 2, 555, '적용하고 돌아가기', {
+      fontSize: '21px', color: '#e8fff3', fontStyle: 'bold', padding: { x: 5, y: 4 },
+    }).setOrigin(0.5));
+    this.settingsOverlay = this.add.container(0, 0, children).setDepth(240);
+    this.publishAccessibleStatus();
+  }
+
+  private adjustVolume(key: keyof GameSettings, delta: number): void {
+    this.settings[key] = Math.round(Phaser.Math.Clamp(this.settings[key] + delta, 0, 1) * 100) / 100;
+    this.music.setVolumes(this.settings.musicVolume, this.settings.effectsVolume);
+    if (key === 'effectsVolume') this.music.playEffect('select');
+    this.persistProgress();
+    this.renderSettings();
+  }
+
+  private closeSettings(): void {
+    this.settingsOverlay?.destroy(true);
+    this.settingsOverlay = undefined;
+    if (this.settingsReturnTo === 'start') this.startOverlay?.setVisible(true);
+    else this.pauseOverlay?.setVisible(true);
     this.publishAccessibleStatus();
   }
 
@@ -383,10 +563,11 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   update(time: number): void {
-    if (!this.gameStarted || this.hp <= 0 || this.runFinished) return;
+    if (!this.gameStarted || this.gamePaused || this.hp <= 0 || this.runFinished) return;
     if (this.awaitingUpgrade || this.awaitingSpecial) {
       this.player.setVelocity(0);
-      this.player.stop().setFrame(0);
+      this.playerAttackingUntil = 0;
+      this.player.stop().setTexture('player', 0);
       return;
     }
 
@@ -407,8 +588,10 @@ export class ArenaScene extends Phaser.Scene {
     const speed = dashing ? this.dashSpeed : this.moveSpeed;
     if (time >= this.playerKnockbackUntil || dashStarted) this.player.setVelocity(direction.x * speed, direction.y * speed);
     const walking = direction.lengthSq() > 0 && time >= this.playerKnockbackUntil;
-    if (walking) this.player.play('player-walk', true);
-    else this.player.stop().setFrame(0);
+    const attacking = time < this.playerAttackingUntil;
+    if (!attacking && walking) this.player.play('player-walk', true);
+    else if (!attacking) this.player.stop().setTexture('player', 0);
+    if (attacking) this.updateAttackVisualPosition();
 
     const pointer = this.input.activePointer;
     // 전신 캐릭터 이미지는 조준 각도로 회전시키지 않고 좌우 방향만 전환한다.
@@ -446,6 +629,7 @@ export class ArenaScene extends Phaser.Scene {
     this.drawArena(room.accent);
     this.nextBossWallVolleyAt = room.type === 'boss' ? this.time.now + 1800 : Number.POSITIVE_INFINITY;
     this.bossWallVolleyFlipped = false;
+    this.clearBossWallTelegraph();
 
     this.visitedRooms.add(index);
     this.revealedRooms.add(index);
@@ -478,7 +662,8 @@ export class ArenaScene extends Phaser.Scene {
       right: [GAME_WIDTH - 150, GAME_HEIGHT / 2],
     };
     const [x, y] = enteredFrom ? positions[enteredFrom] : [170, GAME_HEIGHT / 2];
-    this.player.setPosition(x, y).setVelocity(0).clearTint().setAlpha(1).stop().setFrame(0);
+    this.player.setPosition(x, y).setVelocity(0).clearTint().setAlpha(1).stop().setTexture('player', 0);
+    this.playerAttackingUntil = 0;
     this.playerKnockbackUntil = 0;
   }
 
@@ -531,6 +716,7 @@ export class ArenaScene extends Phaser.Scene {
       }
       enemy.hp = enemy.maxHp;
       enemy.setCollideWorldBounds(true).setBounce(0.15).setDepth(kind === 'boss' ? 5 : 4);
+      this.applyCharacterOutline(enemy, kind === 'boss' ? 0xff704f : 0x160f1c, kind === 'boss' ? 1.5 : 1.1);
     });
   }
 
@@ -706,6 +892,7 @@ export class ArenaScene extends Phaser.Scene {
     this.bossHealthText.setVisible(false);
     this.bossPhaseText.setVisible(false);
     this.clearBossTelegraph();
+    this.clearBossWallTelegraph();
   }
 
   private moveRangedEnemy(enemy: Enemy, angle: number, distance: number, preferredDistance = 275): void {
@@ -737,29 +924,89 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private updateBossWallVolley(time: number): void {
-    if (this.rooms[this.roomIndex].type !== 'boss' || time < this.nextBossWallVolleyAt) return;
+    if (this.rooms[this.roomIndex].type !== 'boss' || this.pendingBossWallVolley || time < this.nextBossWallVolleyAt) return;
     const boss = this.getActiveBoss();
     if (!boss || time < (boss.phaseInvulnerableUntil ?? 0)) return;
-    this.nextBossWallVolleyAt = time + BOSS_WALL_VOLLEY_INTERVAL;
+    this.pendingBossWallVolley = true;
+    this.pendingBossWallVolleyFlipped = this.bossWallVolleyFlipped;
+    this.nextBossWallVolleyAt = Number.POSITIVE_INFINITY;
+    this.drawBossWallTelegraph(this.pendingBossWallVolleyFlipped);
+    this.time.delayedCall(BOSS_WALL_TELEGRAPH_DURATION, () => {
+      if (!this.pendingBossWallVolley || this.rooms[this.roomIndex].type !== 'boss' || this.hp <= 0 || this.runFinished) {
+        this.clearBossWallTelegraph();
+        return;
+      }
+      this.fireBossWallVolley(this.pendingBossWallVolleyFlipped);
+      this.bossWallVolleyFlipped = !this.pendingBossWallVolleyFlipped;
+      this.nextBossWallVolleyAt = this.time.now + BOSS_WALL_VOLLEY_INTERVAL;
+      this.clearBossWallTelegraph();
+    });
+  }
 
+  private getBossWallVolleyGeometry(flipped: boolean): {
+    horizontalRows: number[];
+    verticalColumns: number[];
+    horizontalX: number;
+    horizontalAngle: number;
+    verticalY: number;
+    verticalAngle: number;
+  } {
     const left = 52;
     const right = GAME_WIDTH - 52;
     const top = 73;
     const bottom = GAME_HEIGHT - 73;
-    const horizontalRows = Array.from({ length: 2 }, (_, index) => (
-      top + (bottom - top) * (index + 1) / 3
-    ));
-    const verticalColumns = Array.from({ length: 3 }, (_, index) => (
-      left + (right - left) * (index + 1) / 4
-    ));
+    return {
+      horizontalRows: Array.from({ length: 2 }, (_, index) => top + (bottom - top) * (index + 1) / 3),
+      verticalColumns: Array.from({ length: 3 }, (_, index) => left + (right - left) * (index + 1) / 4),
+      horizontalX: flipped ? right : left,
+      horizontalAngle: flipped ? Math.PI : 0,
+      verticalY: flipped ? bottom : top,
+      verticalAngle: flipped ? -Math.PI / 2 : Math.PI / 2,
+    };
+  }
 
-    const horizontalX = this.bossWallVolleyFlipped ? right : left;
-    const horizontalAngle = this.bossWallVolleyFlipped ? Math.PI : 0;
-    const verticalY = this.bossWallVolleyFlipped ? bottom : top;
-    const verticalAngle = this.bossWallVolleyFlipped ? -Math.PI / 2 : Math.PI / 2;
-    horizontalRows.forEach((y) => this.fireWallProjectile(horizontalX, y, horizontalAngle));
-    verticalColumns.forEach((x) => this.fireWallProjectile(x, verticalY, verticalAngle));
-    this.bossWallVolleyFlipped = !this.bossWallVolleyFlipped;
+  private drawBossWallTelegraph(flipped: boolean): void {
+    const geometry = this.getBossWallVolleyGeometry(flipped);
+    const horizontalEndX = flipped ? 60 : GAME_WIDTH - 60;
+    const verticalEndY = flipped ? 70 : GAME_HEIGHT - 70;
+    this.bossWallTelegraphGraphics.clear();
+    this.bossWallTelegraphGraphics.lineStyle(5, 0xff7b54, 0.7);
+    geometry.horizontalRows.forEach((y) => {
+      this.bossWallTelegraphGraphics.lineBetween(geometry.horizontalX, y, horizontalEndX, y);
+      this.bossWallTelegraphGraphics.fillStyle(0xffd071, 0.95).fillCircle(geometry.horizontalX, y, 13);
+      const tipX = geometry.horizontalX + Math.cos(geometry.horizontalAngle) * 44;
+      this.bossWallTelegraphGraphics.fillTriangle(tipX, y, tipX - Math.cos(geometry.horizontalAngle) * 20 + Math.sin(geometry.horizontalAngle) * 10, y - Math.sin(geometry.horizontalAngle) * 20 - Math.cos(geometry.horizontalAngle) * 10, tipX - Math.cos(geometry.horizontalAngle) * 20 - Math.sin(geometry.horizontalAngle) * 10, y - Math.sin(geometry.horizontalAngle) * 20 + Math.cos(geometry.horizontalAngle) * 10);
+    });
+    geometry.verticalColumns.forEach((x) => {
+      this.bossWallTelegraphGraphics.lineBetween(x, geometry.verticalY, x, verticalEndY);
+      this.bossWallTelegraphGraphics.fillStyle(0xffd071, 0.95).fillCircle(x, geometry.verticalY, 13);
+      const tipY = geometry.verticalY + Math.sin(geometry.verticalAngle) * 44;
+      this.bossWallTelegraphGraphics.fillTriangle(x, tipY, x - 10, tipY - Math.sin(geometry.verticalAngle) * 20, x + 10, tipY - Math.sin(geometry.verticalAngle) * 20);
+    });
+    const horizontalDirection = flipped ? '오른쪽 → 왼쪽' : '왼쪽 → 오른쪽';
+    const verticalDirection = flipped ? '아래 → 위' : '위 → 아래';
+    this.bossWallWarningText.setText(`벽 화염 예고 · ${horizontalDirection} / ${verticalDirection}`).setVisible(true).setAlpha(1);
+    this.tweens.killTweensOf(this.bossWallTelegraphGraphics);
+    this.tweens.add({
+      targets: [this.bossWallTelegraphGraphics, this.bossWallWarningText],
+      alpha: { from: 0.25, to: 1 }, duration: 150, yoyo: true, repeat: 2,
+    });
+    this.publishAccessibleStatus();
+  }
+
+  private fireBossWallVolley(flipped: boolean): void {
+    const geometry = this.getBossWallVolleyGeometry(flipped);
+    geometry.horizontalRows.forEach((y) => this.fireWallProjectile(geometry.horizontalX, y, geometry.horizontalAngle));
+    geometry.verticalColumns.forEach((x) => this.fireWallProjectile(x, geometry.verticalY, geometry.verticalAngle));
+  }
+
+  private clearBossWallTelegraph(): void {
+    this.pendingBossWallVolley = false;
+    this.bossWallTelegraphGraphics?.clear().setAlpha(1);
+    this.bossWallWarningText?.setVisible(false).setText('').setAlpha(1);
+    if (this.bossWallTelegraphGraphics) this.tweens.killTweensOf(this.bossWallTelegraphGraphics);
+    if (this.bossWallWarningText) this.tweens.killTweensOf(this.bossWallWarningText);
+    this.publishAccessibleStatus();
   }
 
   private fireWallProjectile(x: number, y: number, angle: number): void {
@@ -784,9 +1031,12 @@ export class ArenaScene extends Phaser.Scene {
     const now = this.time.now;
     if (now - this.lastAttackAt < this.attackCooldown || this.hp <= 0 || this.transitioning || this.awaitingUpgrade || this.awaitingSpecial) return;
     this.lastAttackAt = now;
+    this.playerAttackingUntil = now + 250;
+    this.player.play('player-attack');
     this.music.playEffect('attack');
     const pointer = this.input.activePointer;
     const facing = Phaser.Math.Angle.Between(this.player.x, this.player.y, pointer.worldX, pointer.worldY);
+    this.currentAttackFacing = facing;
     const attackOrigin = this.getAttackOrigin(facing);
     this.showAttackVisual(facing);
     this.enemies.getChildren().forEach((child) => {
@@ -824,6 +1074,7 @@ export class ArenaScene extends Phaser.Scene {
           if (enemy.kind === 'boss') this.clearBossTelegraph();
           const ashReward: Record<EnemyKind, number> = { stalker: 2, brute: 4, archer: 3, boss: 33 };
           this.ashes += ashReward[enemy.kind];
+          this.persistProgress();
           enemy.destroy();
           this.kills += 1;
           this.updateHud();
@@ -868,6 +1119,12 @@ export class ArenaScene extends Phaser.Scene {
       onComplete: () => this.attackSlash.setVisible(false),
     });
     this.time.delayedCall(Math.round(duration * 0.85), () => this.attackArc.setVisible(false).clear());
+  }
+
+  private updateAttackVisualPosition(): void {
+    const attackOrigin = this.getAttackOrigin(this.currentAttackFacing);
+    if (this.attackArc.visible) this.attackArc.setPosition(attackOrigin.x, attackOrigin.y);
+    if (this.attackSlash.visible) this.attackSlash.setPosition(attackOrigin.x, attackOrigin.y);
   }
 
   private drawAttackArc(facing: number): void {
@@ -915,6 +1172,7 @@ export class ArenaScene extends Phaser.Scene {
     this.updateHud();
     if (this.hp === 0) {
       this.clearBossTelegraph();
+      this.clearBossWallTelegraph();
       this.player.setVelocity(0).setTint(0x4b4350);
       this.enemies.setVelocityX(0); this.enemies.setVelocityY(0);
       this.enemyProjectiles.setVelocityX(0); this.enemyProjectiles.setVelocityY(0);
@@ -961,7 +1219,7 @@ export class ArenaScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     newGameButton.on('pointerover', () => newGameButton.setFillStyle(0x8a405f, 1));
     newGameButton.on('pointerout', () => newGameButton.setFillStyle(0x6f344f, 0.98));
-    newGameButton.on('pointerdown', () => this.scene.restart());
+    newGameButton.on('pointerdown', () => this.startCompletelyNewGame());
     const newGameLabel = this.add.text(GAME_WIDTH / 2, 455, '새 게임 시작', {
       fontSize: '23px', color: '#fff2ce', fontStyle: 'bold', padding: { x: 6, y: 5 },
     }).setOrigin(0.5);
@@ -1076,6 +1334,7 @@ export class ArenaScene extends Phaser.Scene {
     this.music.playEffect('select');
     const nextLevel = level + 1;
     this.permanentUpgradeLevels.set(upgrade.id, nextLevel);
+    this.persistProgress();
     this.applyPermanentUpgrade(upgrade.id);
     this.permanentPurchaseMessage = `${upgrade.name} 영구 Lv.${nextLevel} 획득`;
     this.showPermanentUpgradeScreen();
@@ -1154,6 +1413,14 @@ export class ArenaScene extends Phaser.Scene {
     this.startRoom(0);
     this.updateBuildText();
     this.updateHud();
+  }
+
+  private startCompletelyNewGame(): void {
+    clearRogueliteProgress();
+    this.ashes = 0;
+    this.permanentUpgradeLevels.clear();
+    this.persistProgress();
+    this.scene.restart();
   }
 
   private completeCurrentRoom(): void {
@@ -1374,6 +1641,7 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
     this.ashes -= choice.cost;
+    this.persistProgress();
     this.music.playEffect('select');
     const result = choice.action();
     this.completeSpecialRoom(result);
@@ -1659,6 +1927,8 @@ export class ArenaScene extends Phaser.Scene {
       countdown: this.countdownValue,
       musicMode: this.music.currentMode,
       lastSoundEffect: this.music.lastEffect,
+      playerAnimation: this.player.anims.currentAnim?.key ?? null,
+      playerMoving: this.player.body ? this.player.body.velocity.lengthSq() > 16 : false,
       hp: this.hp,
       room: this.roomIndex,
       roomName: this.rooms[this.roomIndex].name,
@@ -1670,10 +1940,14 @@ export class ArenaScene extends Phaser.Scene {
       bossPhase: boss ? this.getBossPhase(boss) : null,
       bossInvulnerable: boss ? this.time.now < (boss.phaseInvulnerableUntil ?? 0) : false,
       bossTelegraphActive: this.bossTelegraphActive,
+      wallTelegraphActive: this.pendingBossWallVolley,
       wallFireballs: this.enemyProjectiles.getChildren().filter((child) => (
         (child as EnemyProjectile).active && (child as EnemyProjectile).source === 'wall'
       )).length,
       ashes: this.ashes,
+      paused: this.gamePaused,
+      settingsOpen: Boolean(this.settingsOverlay),
+      volumes: this.settings,
       visitedRooms: this.visitedRooms.size,
       clearedRooms: this.clearedRooms.size,
       enemies: this.enemies?.countActive(true) ?? 0,
@@ -1717,20 +1991,60 @@ export class ArenaScene extends Phaser.Scene {
     this.attackDamage = 34; this.attackCooldown = ATTACK_COOLDOWN; this.attackRange = 74; this.attackArcAngle = 0.92;
     this.moveSpeed = 260; this.dashSpeed = 620; this.dashCooldown = 1000; this.dashDuration = 240;
     this.roomRecovery = 0; this.lastCombatRecovery = undefined; this.criticalChance = 0; this.damageReduction = 0;
-    this.lastAttackAt = -1000; this.lastDashAt = -2000; this.invulnerableUntil = 0; this.playerKnockbackUntil = 0;
+    this.lastAttackAt = -1000; this.playerAttackingUntil = 0; this.currentAttackFacing = 0;
+    this.lastDashAt = -2000; this.invulnerableUntil = 0; this.playerKnockbackUntil = 0;
     this.transitionLockUntil = 0; this.roomCleared = false; this.transitioning = false; this.runFinished = false; this.gameStarted = false;
-    this.countdownActive = false; this.countdownValue = 0;
+    this.countdownActive = false; this.countdownValue = 0; this.gamePaused = false;
     this.awaitingUpgrade = false; this.awaitingSpecial = false; this.awaitingPermanentUpgrade = false;
     this.acquiredUpgrades = new Map<UpgradeId, number>(); this.permanentUpgradeLevels = new Map<PermanentUpgradeId, number>();
     this.upgradeChoices = []; this.permanentUpgradeChoices = [];
     this.upgradeOverlay = undefined; this.specialOverlay = undefined; this.specialChoices = []; this.specialFeedbackText = undefined;
     this.restartOverlay = undefined; this.permanentOverlay = undefined; this.permanentPurchaseMessage = '';
-    this.startOverlay = undefined; this.bossTelegraphActive = false;
+    this.startOverlay = undefined; this.pauseOverlay = undefined; this.settingsOverlay = undefined; this.bossTelegraphActive = false;
+    this.pendingBossWallVolley = false; this.pendingBossWallVolleyFlipped = false;
     this.debugInvincible = false;
     this.clearedRooms = new Set<number>();
     this.usedSpecialRooms = new Set<number>();
     this.visitedRooms = new Set<number>();
     this.revealedRooms = new Set<number>([0]);
+    this.loadPersistedProgress();
+  }
+
+  private loadPersistedProgress(): void {
+    const progress = loadRogueliteProgress();
+    this.ashes = progress.ashes;
+    this.settings = { ...progress.settings };
+    this.music.setVolumes(this.settings.musicVolume, this.settings.effectsVolume);
+    this.permanentUpgradeLevels.clear();
+    PERMANENT_UPGRADES.forEach((upgrade) => {
+      const savedLevel = progress.permanentUpgrades[upgrade.id];
+      if (typeof savedLevel !== 'number' || !Number.isFinite(savedLevel)) return;
+      const level = Phaser.Math.Clamp(Math.floor(savedLevel), 0, upgrade.maxLevel);
+      if (level > 0) this.permanentUpgradeLevels.set(upgrade.id, level);
+    });
+    this.resetTemporaryUpgrades();
+    this.hp = this.maxHp;
+  }
+
+  private persistProgress(): void {
+    const permanentUpgrades: Partial<Record<PermanentUpgradeId, number>> = {};
+    this.permanentUpgradeLevels.forEach((level, id) => {
+      permanentUpgrades[id] = level;
+    });
+    saveRogueliteProgress({
+      version: 1,
+      ashes: this.ashes,
+      permanentUpgrades,
+      settings: { ...this.settings },
+    });
+  }
+
+  private applyCharacterOutline(sprite: Phaser.Physics.Arcade.Sprite, color: number, strength: number): void {
+    try {
+      sprite.filters?.external.addGlow(color, strength, 0, 1, false, 0.12, 5);
+    } catch {
+      // Canvas 렌더러처럼 필터를 지원하지 않는 환경에서는 원본 스프라이트를 그대로 사용한다.
+    }
   }
 
   private drawArena(accent: number): void {
@@ -1762,6 +2076,14 @@ export class ArenaScene extends Phaser.Scene {
     }
     if (!this.anims.exists('fireball-fly')) {
       this.anims.create({ key: 'fireball-fly', frames: this.anims.generateFrameNumbers('fireball', { start: 0, end: 3 }), frameRate: 15, repeat: -1 });
+    }
+    if (!this.anims.exists('player-attack')) {
+      this.anims.create({
+        key: 'player-attack',
+        frames: this.anims.generateFrameNumbers('playerAttack', { start: 0, end: 3 }),
+        frameRate: 16,
+        repeat: 0,
+      });
     }
   }
 }

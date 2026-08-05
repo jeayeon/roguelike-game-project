@@ -15,6 +15,8 @@ export class AdaptiveMusic {
   private step = 0;
   private mode: MusicMode = 'exploration';
   private recentEffect?: SoundEffect;
+  private musicVolume = 0.65;
+  private effectsVolume = 0.75;
 
   get currentMode(): MusicMode | 'stopped' {
     return this.context ? this.mode : 'stopped';
@@ -24,16 +26,26 @@ export class AdaptiveMusic {
     return this.recentEffect ?? null;
   }
 
+  get volumes(): { music: number; effects: number } {
+    return { music: this.musicVolume, effects: this.effectsVolume };
+  }
+
+  setVolumes(music: number, effects: number): void {
+    this.musicVolume = Math.min(1, Math.max(0, music));
+    this.effectsVolume = Math.min(1, Math.max(0, effects));
+    this.applyVolumes();
+  }
+
   start(mode: MusicMode): void {
     this.mode = mode;
     if (!this.context) {
       this.context = new AudioContext();
       this.master = this.context.createGain();
       this.master.gain.setValueAtTime(0.0001, this.context.currentTime);
-      this.master.gain.exponentialRampToValueAtTime(0.11, this.context.currentTime + 0.8);
+      this.master.gain.exponentialRampToValueAtTime(this.getMusicGain(), this.context.currentTime + 0.8);
       this.master.connect(this.context.destination);
       this.effects = this.context.createGain();
-      this.effects.gain.setValueAtTime(0.28, this.context.currentTime);
+      this.effects.gain.setValueAtTime(this.getEffectsGain(), this.context.currentTime);
       this.effects.connect(this.context.destination);
     }
     void this.context.resume();
@@ -46,7 +58,7 @@ export class AdaptiveMusic {
     this.mode = mode;
     if (!this.context || !this.master) return;
     this.master.gain.cancelScheduledValues(this.context.currentTime);
-    this.master.gain.setTargetAtTime(mode === 'boss' ? 0.14 : 0.11, this.context.currentTime, 0.18);
+    this.master.gain.setTargetAtTime(this.getMusicGain(), this.context.currentTime, 0.18);
     this.resetSequence();
   }
 
@@ -55,7 +67,7 @@ export class AdaptiveMusic {
     if (!this.context || !this.effects || this.context.state !== 'running') return;
     const at = this.context.currentTime + 0.008;
     if (effect === 'attack') {
-      this.scheduleEffectTone(520, 170, at, 0.1, 0.17, 'sawtooth');
+      this.scheduleSwordWhoosh(at);
     } else if (effect === 'dash') {
       this.scheduleEffectTone(150, 720, at, 0.2, 0.2, 'triangle');
     } else if (effect === 'enemyHit') {
@@ -97,6 +109,27 @@ export class AdaptiveMusic {
     if (!this.context) return;
     this.step = 0;
     this.nextStepAt = this.context.currentTime + 0.08;
+  }
+
+  private getMusicGain(): number {
+    return Math.max(0.0001, (this.mode === 'boss' ? 0.14 : 0.11) * this.musicVolume);
+  }
+
+  private getEffectsGain(): number {
+    return this.effectsVolume * 0.28;
+  }
+
+  private applyVolumes(): void {
+    if (!this.context) return;
+    const now = this.context.currentTime;
+    if (this.master) {
+      this.master.gain.cancelScheduledValues(now);
+      this.master.gain.setTargetAtTime(this.getMusicGain(), now, 0.04);
+    }
+    if (this.effects) {
+      this.effects.gain.cancelScheduledValues(now);
+      this.effects.gain.setTargetAtTime(this.getEffectsGain(), now, 0.025);
+    }
   }
 
   private scheduleAhead(): void {
@@ -180,6 +213,35 @@ export class AdaptiveMusic {
     filter.type = 'lowpass';
     filter.frequency.setValueAtTime(900, at);
     gain.gain.setValueAtTime(volume, at);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.effects);
+    source.start(at);
+    source.stop(at + duration);
+  }
+
+  private scheduleSwordWhoosh(at: number): void {
+    if (!this.context || !this.effects) return;
+    const duration = 0.23;
+    const frameCount = Math.ceil(this.context.sampleRate * duration);
+    const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate);
+    const samples = buffer.getChannelData(0);
+    for (let index = 0; index < frameCount; index += 1) {
+      const envelope = Math.sin(Math.PI * index / frameCount);
+      samples[index] = (Math.random() * 2 - 1) * envelope;
+    }
+    const source = this.context.createBufferSource();
+    const filter = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    source.buffer = buffer;
+    filter.type = 'bandpass';
+    filter.Q.setValueAtTime(0.85, at);
+    filter.frequency.setValueAtTime(320, at);
+    filter.frequency.exponentialRampToValueAtTime(1900 + Math.random() * 350, at + 0.075);
+    filter.frequency.exponentialRampToValueAtTime(430, at + duration);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.32, at + 0.045);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
     source.connect(filter);
     filter.connect(gain);
