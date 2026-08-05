@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { AdaptiveMusic } from '../audio/AdaptiveMusic';
 import {
   ATTACK_COOLDOWN,
   DIRECTIONS,
@@ -42,6 +43,7 @@ const ROOM_PORTAL_STYLE: Record<RoomType, { fill: number; stroke: number; text: 
 };
 
 const ATTACK_ORIGIN_OFFSET = 18;
+const BOSS_WALL_VOLLEY_INTERVAL = 3200;
 
 export class ArenaScene extends Phaser.Scene {
   private rooms: RoomDefinition[] = [];
@@ -59,7 +61,7 @@ export class ArenaScene extends Phaser.Scene {
   private attackArcAngle = 0.92;
   private moveSpeed = 260;
   private dashSpeed = 620;
-  private dashCooldown = 1100;
+  private dashCooldown = 1000;
   private dashDuration = 240;
   private roomRecovery = 0;
   private lastCombatRecovery?: { base: number; bonus: number; total: number; restored: number };
@@ -77,6 +79,8 @@ export class ArenaScene extends Phaser.Scene {
   private transitioning = false;
   private runFinished = false;
   private gameStarted = false;
+  private countdownActive = false;
+  private countdownValue = 0;
   private awaitingUpgrade = false;
   private awaitingSpecial = false;
   private awaitingPermanentUpgrade = false;
@@ -92,6 +96,8 @@ export class ArenaScene extends Phaser.Scene {
   private permanentOverlay?: Phaser.GameObjects.Container;
   private permanentPurchaseMessage = '';
   private startOverlay?: Phaser.GameObjects.Container;
+  private countdownText?: Phaser.GameObjects.Text;
+  private music = new AdaptiveMusic();
   private clearedRooms = new Set<number>();
   private usedSpecialRooms = new Set<number>();
   private visitedRooms = new Set<number>();
@@ -112,6 +118,8 @@ export class ArenaScene extends Phaser.Scene {
   private bossTelegraphGraphics!: Phaser.GameObjects.Graphics;
   private bossPhaseText!: Phaser.GameObjects.Text;
   private bossTelegraphActive = false;
+  private nextBossWallVolleyAt = Number.POSITIVE_INFINITY;
+  private bossWallVolleyFlipped = false;
   private debugInvincible = false;
   private exitPortals!: Record<Direction, Phaser.GameObjects.Arc>;
   private exitLabels!: Record<Direction, Phaser.GameObjects.Text>;
@@ -133,6 +141,7 @@ export class ArenaScene extends Phaser.Scene {
 
   create(): void {
     this.resetRunState();
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.music.stop());
     this.createAnimations();
     this.cameras.main.setBackgroundColor('#120f19');
 
@@ -268,10 +277,39 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private beginGame(): void {
-    if (this.gameStarted) return;
-    this.gameStarted = true;
+    if (this.gameStarted || this.countdownActive) return;
+    this.countdownActive = true;
+    this.countdownValue = 3;
     this.startOverlay?.destroy(true);
     this.startOverlay = undefined;
+    this.music.start('exploration');
+    this.countdownText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2, '3', {
+      fontSize: '112px', color: '#ffd477', fontStyle: 'bold',
+      stroke: '#3a1524', strokeThickness: 12, padding: { x: 18, y: 12 },
+    }).setOrigin(0.5).setDepth(210);
+    this.time.addEvent({
+      delay: 1000,
+      repeat: 2,
+      callback: () => {
+        this.countdownValue -= 1;
+        if (this.countdownValue > 0) {
+          this.countdownText?.setText(String(this.countdownValue)).setScale(1.18).setAlpha(1);
+          this.tweens.add({ targets: this.countdownText, scale: 1, alpha: 0.72, duration: 420 });
+          this.publishAccessibleStatus();
+          return;
+        }
+        this.finishGameStart();
+      },
+    });
+    this.publishAccessibleStatus();
+  }
+
+  private finishGameStart(): void {
+    this.countdownActive = false;
+    this.countdownValue = 0;
+    this.countdownText?.destroy();
+    this.countdownText = undefined;
+    this.gameStarted = true;
     this.player.setVisible(true);
 
     const debugParams = new URLSearchParams(window.location.search);
@@ -361,6 +399,7 @@ export class ArenaScene extends Phaser.Scene {
       this.lastDashAt = time;
       this.invulnerableUntil = time + this.dashDuration;
       this.playerKnockbackUntil = 0;
+      this.music.playEffect('dash');
       this.player.setTint(0x9de8ff);
       this.time.delayedCall(this.dashDuration, () => this.player.active && this.player.clearTint());
     }
@@ -375,6 +414,7 @@ export class ArenaScene extends Phaser.Scene {
     // 전신 캐릭터 이미지는 조준 각도로 회전시키지 않고 좌우 방향만 전환한다.
     this.player.setRotation(0).setFlipX(pointer.worldX < this.player.x);
     this.updateEnemies(time);
+    this.updateBossWallVolley(time);
     this.updateBossHud();
     this.removeOutOfBoundsProjectiles();
 
@@ -393,6 +433,7 @@ export class ArenaScene extends Phaser.Scene {
 
   private startRoom(index: number, enteredFrom?: Direction): void {
     const room = this.rooms[index];
+    this.music.setMode(room.type === 'boss' ? 'boss' : 'exploration');
     this.roomIndex = index;
     this.roomCleared = this.clearedRooms.has(index) || this.usedSpecialRooms.has(index);
     this.transitioning = false;
@@ -403,6 +444,8 @@ export class ArenaScene extends Phaser.Scene {
     this.hideAllExits();
     this.positionPlayerAtEntrance(enteredFrom);
     this.drawArena(room.accent);
+    this.nextBossWallVolleyAt = room.type === 'boss' ? this.time.now + 1800 : Number.POSITIVE_INFINITY;
+    this.bossWallVolleyFlipped = false;
 
     this.visitedRooms.add(index);
     this.revealedRooms.add(index);
@@ -606,6 +649,7 @@ export class ArenaScene extends Phaser.Scene {
     boss.attackPending = false;
     boss.phaseInvulnerableUntil = transitionStartedAt + 1000;
     boss.nextActionAt = transitionStartedAt + 1100;
+    this.music.playEffect('bossPhase');
     boss.setVelocity(0).setTint(phase === 3 ? 0xff9a64 : 0xff6f81);
     const knockback = new Phaser.Math.Vector2(this.player.x - boss.x, this.player.y - boss.y);
     if (knockback.lengthSq() === 0) knockback.set(-1, 0);
@@ -679,6 +723,7 @@ export class ArenaScene extends Phaser.Scene {
     const texture = isBossProjectile ? 'fireball' : 'iceArrow';
     const projectile = this.enemyProjectiles.create(enemy.x, enemy.y, texture, 0) as EnemyProjectile;
     projectile.damage = damage;
+    projectile.source = 'enemy';
     projectile.setRotation(angle).setDepth(6);
     if (isBossProjectile) {
       projectile.setDisplaySize(48, 48).setCircle(76, 52, 52).play('fireball-fly');
@@ -689,6 +734,41 @@ export class ArenaScene extends Phaser.Scene {
     enemy.setTint(0xc5fbff);
     this.time.delayedCall(90, () => enemy.active && enemy.clearTint());
     this.time.delayedCall(3200, () => projectile.active && projectile.destroy());
+  }
+
+  private updateBossWallVolley(time: number): void {
+    if (this.rooms[this.roomIndex].type !== 'boss' || time < this.nextBossWallVolleyAt) return;
+    const boss = this.getActiveBoss();
+    if (!boss || time < (boss.phaseInvulnerableUntil ?? 0)) return;
+    this.nextBossWallVolleyAt = time + BOSS_WALL_VOLLEY_INTERVAL;
+
+    const left = 52;
+    const right = GAME_WIDTH - 52;
+    const top = 73;
+    const bottom = GAME_HEIGHT - 73;
+    const horizontalRows = Array.from({ length: 2 }, (_, index) => (
+      top + (bottom - top) * (index + 1) / 3
+    ));
+    const verticalColumns = Array.from({ length: 3 }, (_, index) => (
+      left + (right - left) * (index + 1) / 4
+    ));
+
+    const horizontalX = this.bossWallVolleyFlipped ? right : left;
+    const horizontalAngle = this.bossWallVolleyFlipped ? Math.PI : 0;
+    const verticalY = this.bossWallVolleyFlipped ? bottom : top;
+    const verticalAngle = this.bossWallVolleyFlipped ? -Math.PI / 2 : Math.PI / 2;
+    horizontalRows.forEach((y) => this.fireWallProjectile(horizontalX, y, horizontalAngle));
+    verticalColumns.forEach((x) => this.fireWallProjectile(x, verticalY, verticalAngle));
+    this.bossWallVolleyFlipped = !this.bossWallVolleyFlipped;
+  }
+
+  private fireWallProjectile(x: number, y: number, angle: number): void {
+    const projectile = this.enemyProjectiles.create(x, y, 'fireball', 0) as EnemyProjectile;
+    projectile.damage = 12;
+    projectile.source = 'wall';
+    projectile.setRotation(angle).setDepth(6).setDisplaySize(42, 42).setCircle(76, 52, 52).play('fireball-fly');
+    this.physics.velocityFromRotation(angle, 275, projectile.body!.velocity);
+    this.time.delayedCall(4800, () => projectile.active && projectile.destroy());
   }
 
   private removeOutOfBoundsProjectiles(): void {
@@ -704,6 +784,7 @@ export class ArenaScene extends Phaser.Scene {
     const now = this.time.now;
     if (now - this.lastAttackAt < this.attackCooldown || this.hp <= 0 || this.transitioning || this.awaitingUpgrade || this.awaitingSpecial) return;
     this.lastAttackAt = now;
+    this.music.playEffect('attack');
     const pointer = this.input.activePointer;
     const facing = Phaser.Math.Angle.Between(this.player.x, this.player.y, pointer.worldX, pointer.worldY);
     const attackOrigin = this.getAttackOrigin(facing);
@@ -739,12 +820,15 @@ export class ArenaScene extends Phaser.Scene {
         const knockback = new Phaser.Math.Vector2(enemy.x - this.player.x, enemy.y - this.player.y).normalize().scale(force);
         enemy.setVelocity(knockback.x, knockback.y);
         if (enemy.hp <= 0) {
+          this.music.playEffect('enemyDeath');
           if (enemy.kind === 'boss') this.clearBossTelegraph();
           const ashReward: Record<EnemyKind, number> = { stalker: 2, brute: 4, archer: 3, boss: 33 };
           this.ashes += ashReward[enemy.kind];
           enemy.destroy();
           this.kills += 1;
           this.updateHud();
+        } else if (!phaseChanged) {
+          this.music.playEffect('enemyHit');
         }
       }
     });
@@ -825,6 +909,7 @@ export class ArenaScene extends Phaser.Scene {
     const reducedDamage = Math.max(1, Math.round(amount * (1 - this.damageReduction)));
     this.hp = Math.max(0, this.hp - reducedDamage);
     this.invulnerableUntil = now + 650;
+    this.music.playEffect('playerHit');
     this.flashPlayerHit();
     this.cameras.main.shake(100, 0.007);
     this.updateHud();
@@ -988,6 +1073,7 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
     this.ashes -= cost;
+    this.music.playEffect('select');
     const nextLevel = level + 1;
     this.permanentUpgradeLevels.set(upgrade.id, nextLevel);
     this.applyPermanentUpgrade(upgrade.id);
@@ -1019,7 +1105,7 @@ export class ArenaScene extends Phaser.Scene {
     this.attackArcAngle = 0.92;
     this.moveSpeed = 260;
     this.dashSpeed = 620;
-    this.dashCooldown = 1100;
+    this.dashCooldown = 1000;
     this.dashDuration = 240;
     this.roomRecovery = 0;
     this.lastCombatRecovery = undefined;
@@ -1075,6 +1161,7 @@ export class ArenaScene extends Phaser.Scene {
     this.clearedRooms.add(room.id);
     this.roomCleared = true;
     this.enemyProjectiles.clear(true, true);
+    this.music.playEffect('roomClear');
     if (room.type === 'combat') {
       const base = 6;
       const bonus = this.roomRecovery;
@@ -1171,12 +1258,12 @@ export class ArenaScene extends Phaser.Scene {
           },
         },
         {
-          label: '생명의 제물', cost: 0,
-          description: '최대 생명을 10 잃고 생명을 모두 회복합니다.',
+          label: '생명의 성장', cost: 0,
+          description: '최대 생명과 현재 생명이 각각 5 증가합니다.',
           action: () => {
-            this.maxHp = Math.max(20, this.maxHp - 10);
-            this.hp = this.maxHp;
-            return '최대 생명 10 감소 · 완전 회복';
+            this.maxHp += 5;
+            this.hp = Math.min(this.maxHp, this.hp + 5);
+            return '최대 생명 +5 · 현재 생명 +5';
           },
         },
       ];
@@ -1287,6 +1374,7 @@ export class ArenaScene extends Phaser.Scene {
       return;
     }
     this.ashes -= choice.cost;
+    this.music.playEffect('select');
     const result = choice.action();
     this.completeSpecialRoom(result);
   }
@@ -1350,6 +1438,7 @@ export class ArenaScene extends Phaser.Scene {
     if (!this.awaitingUpgrade) return;
     const upgrade = this.upgradeChoices[index];
     if (!upgrade) return;
+    this.music.playEffect('select');
     const nextLevel = this.grantUpgrade(upgrade);
     this.awaitingUpgrade = false;
     this.upgradeChoices = [];
@@ -1378,8 +1467,8 @@ export class ArenaScene extends Phaser.Scene {
     if (id === 'attackPower') this.attackDamage += 4;
     if (id === 'attackSpeed') this.attackCooldown = Math.max(170, Math.round(this.attackCooldown * 0.94));
     if (id === 'attackRange') {
-      this.attackRange += 6;
-      this.attackArcAngle += 0.04;
+      this.attackRange = Math.round(this.attackRange * 1.1);
+      this.attackArcAngle *= 1.1;
     }
     if (id === 'maxHealth') {
       this.maxHp += 5;
@@ -1566,6 +1655,10 @@ export class ArenaScene extends Phaser.Scene {
     const boss = this.getActiveBoss();
     status.textContent = JSON.stringify({
       gameStarted: this.gameStarted,
+      countdownActive: this.countdownActive,
+      countdown: this.countdownValue,
+      musicMode: this.music.currentMode,
+      lastSoundEffect: this.music.lastEffect,
       hp: this.hp,
       room: this.roomIndex,
       roomName: this.rooms[this.roomIndex].name,
@@ -1577,6 +1670,9 @@ export class ArenaScene extends Phaser.Scene {
       bossPhase: boss ? this.getBossPhase(boss) : null,
       bossInvulnerable: boss ? this.time.now < (boss.phaseInvulnerableUntil ?? 0) : false,
       bossTelegraphActive: this.bossTelegraphActive,
+      wallFireballs: this.enemyProjectiles.getChildren().filter((child) => (
+        (child as EnemyProjectile).active && (child as EnemyProjectile).source === 'wall'
+      )).length,
       ashes: this.ashes,
       visitedRooms: this.visitedRooms.size,
       clearedRooms: this.clearedRooms.size,
@@ -1619,10 +1715,11 @@ export class ArenaScene extends Phaser.Scene {
     this.rooms = createRandomRoomLayout();
     this.hp = 50; this.maxHp = 50; this.kills = 0; this.ashes = 0; this.roomIndex = 0;
     this.attackDamage = 34; this.attackCooldown = ATTACK_COOLDOWN; this.attackRange = 74; this.attackArcAngle = 0.92;
-    this.moveSpeed = 260; this.dashSpeed = 620; this.dashCooldown = 1100; this.dashDuration = 240;
+    this.moveSpeed = 260; this.dashSpeed = 620; this.dashCooldown = 1000; this.dashDuration = 240;
     this.roomRecovery = 0; this.lastCombatRecovery = undefined; this.criticalChance = 0; this.damageReduction = 0;
     this.lastAttackAt = -1000; this.lastDashAt = -2000; this.invulnerableUntil = 0; this.playerKnockbackUntil = 0;
     this.transitionLockUntil = 0; this.roomCleared = false; this.transitioning = false; this.runFinished = false; this.gameStarted = false;
+    this.countdownActive = false; this.countdownValue = 0;
     this.awaitingUpgrade = false; this.awaitingSpecial = false; this.awaitingPermanentUpgrade = false;
     this.acquiredUpgrades = new Map<UpgradeId, number>(); this.permanentUpgradeLevels = new Map<PermanentUpgradeId, number>();
     this.upgradeChoices = []; this.permanentUpgradeChoices = [];

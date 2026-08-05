@@ -32,6 +32,7 @@ export type PermanentUpgradeDefinition = {
 
 export type EnemyProjectile = Phaser.Physics.Arcade.Sprite & {
   damage: number;
+  source: 'enemy' | 'wall';
 };
 
 export type RoomDefinition = {
