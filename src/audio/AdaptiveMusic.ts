@@ -1,5 +1,16 @@
 export type MusicMode = 'exploration' | 'boss';
-export type SoundEffect = 'attack' | 'dash' | 'enemyHit' | 'enemyDeath' | 'playerHit' | 'roomClear' | 'select' | 'bossPhase';
+export type SoundEffect =
+  | 'attack'
+  | 'dash'
+  | 'enemyHit'
+  | 'stalkerDeath'
+  | 'bruteDeath'
+  | 'archerDeath'
+  | 'bossDeath'
+  | 'playerHit'
+  | 'roomClear'
+  | 'select'
+  | 'bossPhase';
 
 const EXPLORATION_BASS = [73.42, 73.42, 87.31, 65.41];
 const EXPLORATION_MELODY = [293.66, 349.23, 329.63, 261.63, 293.66, 392, 349.23, 246.94];
@@ -88,9 +99,15 @@ export class AdaptiveMusic {
       this.scheduleDashWind(at);
     } else if (effect === 'enemyHit') {
       this.scheduleBladeImpact(at);
-    } else if (effect === 'enemyDeath') {
-      this.scheduleEffectTone(260, 52, at, 0.3, 0.24, 'sawtooth');
-      this.scheduleNoise(at, 0.16, 0.13);
+    } else if (effect === 'stalkerDeath') {
+      this.scheduleVocalDeath(at, 'male');
+    } else if (effect === 'bruteDeath') {
+      this.scheduleStoneCollapse(at);
+    } else if (effect === 'archerDeath') {
+      this.scheduleVocalDeath(at, 'female');
+    } else if (effect === 'bossDeath') {
+      this.scheduleStoneCollapse(at);
+      this.scheduleEffectTone(84, 34, at + 0.04, 0.72, 0.3, 'sawtooth');
     } else if (effect === 'playerHit') {
       this.schedulePlayerImpact(at);
     } else if (effect === 'roomClear') {
@@ -268,25 +285,134 @@ export class AdaptiveMusic {
 
   private scheduleSwordWhoosh(at: number): void {
     if (!this.context || !this.effects) return;
-    const duration = 0.23;
+    const duration = 0.28;
     const frameCount = Math.ceil(this.context.sampleRate * duration);
     const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate);
     const samples = buffer.getChannelData(0);
+    let smoothedNoise = 0;
     for (let index = 0; index < frameCount; index += 1) {
-      const envelope = Math.sin(Math.PI * index / frameCount);
-      samples[index] = (Math.random() * 2 - 1) * envelope;
+      const progress = index / frameCount;
+      const envelope = Math.pow(Math.sin(Math.PI * progress), 0.62) * Math.pow(1 - progress, 0.16);
+      smoothedNoise = smoothedNoise * 0.92 + (Math.random() * 2 - 1) * 0.08;
+      samples[index] = smoothedNoise * envelope * 3.2;
     }
     const source = this.context.createBufferSource();
     const filter = this.context.createBiquadFilter();
     const gain = this.context.createGain();
     source.buffer = buffer;
     filter.type = 'bandpass';
-    filter.Q.setValueAtTime(0.85, at);
-    filter.frequency.setValueAtTime(320, at);
-    filter.frequency.exponentialRampToValueAtTime(1900 + Math.random() * 350, at + 0.075);
-    filter.frequency.exponentialRampToValueAtTime(430, at + duration);
+    filter.Q.setValueAtTime(0.38, at);
+    filter.frequency.setValueAtTime(240, at);
+    filter.frequency.exponentialRampToValueAtTime(1050 + Math.random() * 120, at + 0.11);
+    filter.frequency.exponentialRampToValueAtTime(300, at + duration);
     gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(0.32, at + 0.045);
+    gain.gain.exponentialRampToValueAtTime(0.42, at + 0.065);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.effects);
+    source.start(at);
+    source.stop(at + duration);
+  }
+
+  private scheduleVocalDeath(at: number, voice: 'male' | 'female'): void {
+    if (!this.context || !this.effects) return;
+    const female = voice === 'female';
+    const duration = female ? 0.5 : 0.56;
+    const fundamental = this.context.createOscillator();
+    const overtone = this.context.createOscillator();
+    const voiceGain = this.context.createGain();
+    const formantLow = this.context.createBiquadFilter();
+    const formantHigh = this.context.createBiquadFilter();
+    const output = this.context.createGain();
+    const startPitch = female ? 430 : 142;
+    const endPitch = female ? 245 : 76;
+
+    fundamental.type = female ? 'sawtooth' : 'triangle';
+    overtone.type = 'sawtooth';
+    fundamental.frequency.setValueAtTime(startPitch, at);
+    fundamental.frequency.exponentialRampToValueAtTime(endPitch, at + duration);
+    overtone.frequency.setValueAtTime(startPitch * 2.01, at);
+    overtone.frequency.exponentialRampToValueAtTime(endPitch * 1.94, at + duration);
+    voiceGain.gain.setValueAtTime(0.0001, at);
+    voiceGain.gain.exponentialRampToValueAtTime(female ? 0.16 : 0.2, at + (female ? 0.035 : 0.055));
+    voiceGain.gain.setValueAtTime(female ? 0.14 : 0.18, at + duration * 0.42);
+    voiceGain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    formantLow.type = 'bandpass';
+    formantLow.Q.value = female ? 1.6 : 1.25;
+    formantLow.frequency.setValueAtTime(female ? 920 : 520, at);
+    formantLow.frequency.exponentialRampToValueAtTime(female ? 690 : 390, at + duration);
+    formantHigh.type = 'bandpass';
+    formantHigh.Q.value = female ? 2.2 : 1.7;
+    formantHigh.frequency.setValueAtTime(female ? 2450 : 1180, at);
+    formantHigh.frequency.exponentialRampToValueAtTime(female ? 1720 : 820, at + duration);
+    output.gain.value = female ? 0.9 : 1;
+
+    fundamental.connect(voiceGain);
+    overtone.connect(voiceGain);
+    voiceGain.connect(formantLow);
+    voiceGain.connect(formantHigh);
+    formantLow.connect(output);
+    formantHigh.connect(output);
+    output.connect(this.effects);
+    fundamental.start(at);
+    overtone.start(at);
+    fundamental.stop(at + duration + 0.02);
+    overtone.stop(at + duration + 0.02);
+    this.scheduleBreathNoise(at + (female ? 0.015 : 0.07), duration * 0.82, female ? 2300 : 760, female ? 0.09 : 0.065);
+  }
+
+  private scheduleBreathNoise(at: number, duration: number, frequency: number, volume: number): void {
+    if (!this.context || !this.effects) return;
+    const frameCount = Math.ceil(this.context.sampleRate * duration);
+    const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate);
+    const samples = buffer.getChannelData(0);
+    for (let index = 0; index < frameCount; index += 1) {
+      const progress = index / frameCount;
+      samples[index] = (Math.random() * 2 - 1) * Math.sin(Math.PI * progress);
+    }
+    const source = this.context.createBufferSource();
+    const filter = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    source.buffer = buffer;
+    filter.type = 'bandpass';
+    filter.frequency.value = frequency;
+    filter.Q.value = 0.7;
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(volume, at + 0.04);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.effects);
+    source.start(at);
+    source.stop(at + duration);
+  }
+
+  private scheduleStoneCollapse(at: number): void {
+    this.scheduleEffectTone(105, 42, at, 0.42, 0.3, 'triangle');
+    this.scheduleEffectTone(72, 31, at + 0.12, 0.48, 0.32, 'sawtooth');
+    this.scheduleStoneImpactNoise(at, 0.22, 520, 0.24);
+    this.scheduleStoneImpactNoise(at + 0.11, 0.34, 310, 0.22);
+  }
+
+  private scheduleStoneImpactNoise(at: number, duration: number, cutoff: number, volume: number): void {
+    if (!this.context || !this.effects) return;
+    const frameCount = Math.ceil(this.context.sampleRate * duration);
+    const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate);
+    const samples = buffer.getChannelData(0);
+    for (let index = 0; index < frameCount; index += 1) {
+      const progress = index / frameCount;
+      const debris = Math.random() < 0.035 ? (Math.random() * 2 - 1) * 1.8 : Math.random() * 0.7 - 0.35;
+      samples[index] = debris * Math.pow(1 - progress, 1.45);
+    }
+    const source = this.context.createBufferSource();
+    const filter = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    source.buffer = buffer;
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(cutoff, at);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(90, cutoff * 0.42), at + duration);
+    gain.gain.setValueAtTime(volume, at);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
     source.connect(filter);
     filter.connect(gain);

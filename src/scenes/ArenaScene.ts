@@ -471,30 +471,34 @@ export class ArenaScene extends Phaser.Scene {
     children.push(this.add.text(GAME_WIDTH / 2, 475, '전투 효과음 미리 듣기', {
       fontSize: '17px', color: '#bcaec3', fontStyle: 'bold', padding: { x: 4, y: 3 },
     }).setOrigin(0.5));
-    const enemyHitPreview = this.add.rectangle(360, 520, 230, 52, 0x49394f, 1)
-      .setStrokeStyle(2, 0xd99a72, 1).setInteractive({ useHandCursor: true });
-    enemyHitPreview.on('pointerdown', () => this.music.playEffect('enemyHit'));
-    const playerHitPreview = this.add.rectangle(640, 520, 230, 52, 0x49394f, 1)
-      .setStrokeStyle(2, 0xd27b8d, 1).setInteractive({ useHandCursor: true });
-    playerHitPreview.on('pointerdown', () => this.music.playEffect('playerHit'));
-    const dashPreview = this.add.rectangle(920, 520, 230, 52, 0x49394f, 1)
-      .setStrokeStyle(2, 0x8ac9da, 1).setInteractive({ useHandCursor: true });
-    dashPreview.on('pointerdown', () => this.music.playEffect('dash'));
-    children.push(enemyHitPreview, playerHitPreview, dashPreview);
-    children.push(this.add.text(360, 520, '적 베임음 · 퓨슉', {
-      fontSize: '18px', color: '#ffe0c7', fontStyle: 'bold', padding: { x: 4, y: 3 },
-    }).setOrigin(0.5));
-    children.push(this.add.text(640, 520, '플레이어 피격음 · 충격', {
-      fontSize: '18px', color: '#ffd4dc', fontStyle: 'bold', padding: { x: 4, y: 3 },
-    }).setOrigin(0.5));
-    children.push(this.add.text(920, 520, '대시음 · 샤악', {
-      fontSize: '18px', color: '#d4f5ff', fontStyle: 'bold', padding: { x: 4, y: 3 },
-    }).setOrigin(0.5));
-    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 615, 300, 58, 0x436b68, 1)
+    const addEffectPreview = (
+      x: number,
+      y: number,
+      label: string,
+      effect: Parameters<AdaptiveMusic['playEffect']>[0],
+      strokeColor: number,
+      width = 240,
+    ): void => {
+      const button = this.add.rectangle(x, y, width, 44, 0x49394f, 1)
+        .setStrokeStyle(2, strokeColor, 1).setInteractive({ useHandCursor: true });
+      button.on('pointerdown', () => this.music.playEffect(effect));
+      children.push(button);
+      children.push(this.add.text(x, y, label, {
+        fontSize: '16px', color: '#fff0df', fontStyle: 'bold', padding: { x: 3, y: 2 },
+      }).setOrigin(0.5));
+    };
+    addEffectPreview(190, 510, '검 공격 · 부웅', 'attack', 0xe2b36f);
+    addEffectPreview(490, 510, '적 베임 · 퓨슉', 'enemyHit', 0xd99a72);
+    addEffectPreview(790, 510, '플레이어 피격 · 충격', 'playerHit', 0xd27b8d);
+    addEffectPreview(1090, 510, '대시 · 샤악', 'dash', 0x8ac9da);
+    addEffectPreview(340, 568, '추적자 사망 · 으윽', 'stalkerDeath', 0xc87f72, 250);
+    addEffectPreview(640, 568, '골렘 사망 · 쿠궁', 'bruteDeath', 0xb7a184, 250);
+    addEffectPreview(940, 568, '원거리 사망 · 아악', 'archerDeath', 0xb88bc8, 250);
+    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 650, 300, 52, 0x436b68, 1)
       .setStrokeStyle(3, 0x91e3bd, 1).setInteractive({ useHandCursor: true });
     closeButton.on('pointerdown', () => this.closeSettings());
     children.push(closeButton);
-    children.push(this.add.text(GAME_WIDTH / 2, 615, '적용하고 돌아가기', {
+    children.push(this.add.text(GAME_WIDTH / 2, 650, '적용하고 돌아가기', {
       fontSize: '21px', color: '#e8fff3', fontStyle: 'bold', padding: { x: 5, y: 4 },
     }).setOrigin(0.5));
     this.settingsOverlay = this.add.container(0, 0, children).setDepth(240);
@@ -1099,7 +1103,13 @@ export class ArenaScene extends Phaser.Scene {
         const knockback = new Phaser.Math.Vector2(enemy.x - this.player.x, enemy.y - this.player.y).normalize().scale(force);
         enemy.setVelocity(knockback.x, knockback.y);
         if (enemy.hp <= 0) {
-          this.music.playEffect('enemyDeath');
+          const deathEffect = {
+            stalker: 'stalkerDeath',
+            brute: 'bruteDeath',
+            archer: 'archerDeath',
+            boss: 'bossDeath',
+          } as const;
+          this.music.playEffect(deathEffect[enemy.kind]);
           if (enemy.kind === 'boss') this.clearBossTelegraph();
           const ashReward: Record<EnemyKind, number> = { stalker: 2, brute: 4, archer: 3, boss: 33 };
           this.ashes += ashReward[enemy.kind];
