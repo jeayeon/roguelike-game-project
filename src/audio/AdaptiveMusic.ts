@@ -449,32 +449,47 @@ export class AdaptiveMusic {
 
   private scheduleBladeImpact(at: number): void {
     if (!this.context || !this.effects) return;
-    const duration = 0.17;
+    const duration = 0.14;
     const frameCount = Math.ceil(this.context.sampleRate * duration);
     const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate);
     const samples = buffer.getChannelData(0);
+    let body = 0;
     for (let index = 0; index < frameCount; index += 1) {
       const progress = index / frameCount;
-      const attack = Math.min(1, progress / 0.07);
-      const envelope = attack * Math.pow(1 - progress, 1.7);
-      samples[index] = (Math.random() * 2 - 1) * envelope;
+      body = body * 0.68 + (Math.random() * 2 - 1) * 0.32;
+      const snap = progress < 0.045 ? (Math.random() * 2 - 1) * (1 - progress / 0.045) * 1.7 : 0;
+      const envelope = Math.pow(1 - progress, 2.35);
+      samples[index] = (body * 1.1 + snap) * envelope;
     }
     const source = this.context.createBufferSource();
-    const filter = this.context.createBiquadFilter();
+    const bodyFilter = this.context.createBiquadFilter();
+    const snapFilter = this.context.createBiquadFilter();
+    const bodyGain = this.context.createGain();
+    const snapGain = this.context.createGain();
     const gain = this.context.createGain();
     source.buffer = buffer;
-    filter.type = 'bandpass';
-    filter.Q.setValueAtTime(0.5, at);
-    filter.frequency.setValueAtTime(5600, at);
-    filter.frequency.exponentialRampToValueAtTime(2100, at + duration);
+    bodyFilter.type = 'lowpass';
+    bodyFilter.frequency.setValueAtTime(1450, at);
+    bodyFilter.frequency.exponentialRampToValueAtTime(260, at + duration);
+    snapFilter.type = 'bandpass';
+    snapFilter.Q.value = 0.7;
+    snapFilter.frequency.setValueAtTime(3100, at);
+    snapFilter.frequency.exponentialRampToValueAtTime(1050, at + 0.055);
+    bodyGain.gain.value = 0.78;
+    snapGain.gain.value = 0.3;
     gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(0.42, at + 0.018);
+    gain.gain.exponentialRampToValueAtTime(0.46, at + 0.006);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + duration);
-    source.connect(filter);
-    filter.connect(gain);
+    source.connect(bodyFilter);
+    source.connect(snapFilter);
+    bodyFilter.connect(bodyGain);
+    snapFilter.connect(snapGain);
+    bodyGain.connect(gain);
+    snapGain.connect(gain);
     gain.connect(this.effects);
     source.start(at);
     source.stop(at + duration);
+    this.scheduleEffectTone(148, 68, at + 0.002, 0.105, 0.19, 'sine');
   }
 
   private scheduleDashWind(at: number): void {

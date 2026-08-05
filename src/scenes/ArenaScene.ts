@@ -488,7 +488,7 @@ export class ArenaScene extends Phaser.Scene {
       }).setOrigin(0.5));
     };
     addEffectPreview(190, 510, '검 공격 · 부웅', 'attack', 0xe2b36f);
-    addEffectPreview(490, 510, '적 베임 · 퓨슉', 'enemyHit', 0xd99a72);
+    addEffectPreview(490, 510, '적 베임 · 퍽', 'enemyHit', 0xd99a72);
     addEffectPreview(790, 510, '플레이어 피격 · 충격', 'playerHit', 0xd27b8d);
     addEffectPreview(1090, 510, '대시 · 샤악', 'dash', 0x8ac9da);
     addEffectPreview(340, 568, '추적자 사망 · 으윽', 'stalkerDeath', 0xc87f72, 250);
