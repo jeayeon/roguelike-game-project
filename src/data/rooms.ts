@@ -20,7 +20,7 @@ const COMBAT_TEMPLATES: CombatTemplate[] = [
   { name: '그을린 회랑', description: '심층으로 이어지는 길을 확보하세요', accent: 0x5d465f, enemies: ['stalker', 'stalker', 'stalker', 'stalker', 'brute', 'brute', 'brute', 'archer', 'archer'] },
   { name: '심층 제단', description: '깊은 곳을 지키는 무리를 처치하세요', accent: 0x664356, enemies: ['stalker', 'stalker', 'stalker', 'stalker', 'brute', 'brute', 'brute', 'archer', 'archer', 'archer'] },
   { name: '붉은 감시로', description: '봉인실 주변의 감시자를 처치하세요', accent: 0x68404e, enemies: ['stalker', 'stalker', 'stalker', 'brute', 'brute', 'brute', 'brute', 'archer', 'archer'] },
-  { name: '재의 왕좌 앞뜰', description: '군주에게 향하는 마지막 길을 여세요', accent: 0x7b3d49, enemies: ['stalker', 'stalker', 'stalker', 'stalker', 'brute', 'brute', 'brute', 'brute', 'archer', 'archer'] },
+  { name: '심연의 핵 앞뜰', description: '출구를 지키는 수문장에게 향하는 길을 여세요', accent: 0x7b3d49, enemies: ['stalker', 'stalker', 'stalker', 'stalker', 'brute', 'brute', 'brute', 'brute', 'archer', 'archer'] },
 ];
 
 const createExits = (id: number): RoomDefinition['exits'] => {
@@ -47,7 +47,7 @@ const SPECIAL_ROOM_CONTENT: Record<Exclude<RoomType, 'combat'>, CombatTemplate> 
   healing: { name: '고요한 샘', description: '상처를 회복할 방법을 선택하세요', accent: 0x3f7c6b, enemies: [] },
   shop: { name: '잿빛 시장', description: '전투에서 모은 재로 힘을 거래하세요', accent: 0xb88935, enemies: [] },
   boss: {
-    name: '재의 군주 봉인실', description: '재의 군주를 쓰러뜨리세요', accent: 0x9a3d49,
+    name: '심연의 핵', description: '화로의 수문장을 쓰러뜨리고 탈출구를 여세요', accent: 0x9a3d49,
     enemies: ['boss', 'stalker', 'stalker', 'archer', 'archer'],
   },
 };

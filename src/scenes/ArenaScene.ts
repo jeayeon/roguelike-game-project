@@ -297,11 +297,11 @@ export class ArenaScene extends Phaser.Scene {
   private showStartScreen(): void {
     const children: Phaser.GameObjects.GameObject[] = [];
     children.push(this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x0b0810, 0.97).setInteractive());
-    children.push(this.add.text(GAME_WIDTH / 2, 145, '재의 귀환', {
+    children.push(this.add.text(GAME_WIDTH / 2, 145, '심연의 화로', {
       fontSize: '58px', color: '#f7c86a', fontStyle: 'bold',
       stroke: '#512239', strokeThickness: 8, padding: { x: 12, y: 10 },
     }).setOrigin(0.5));
-    children.push(this.add.text(GAME_WIDTH / 2, 220, '갈림길을 탐색하고 재의 군주를 쓰러뜨리세요', {
+    children.push(this.add.text(GAME_WIDTH / 2, 220, '심연의 화로를 돌파하고 수문장을 쓰러뜨려 탈출하세요', {
       fontSize: '22px', color: '#d9c8dc', padding: { x: 6, y: 5 },
     }).setOrigin(0.5));
     children.push(this.add.text(GAME_WIDTH / 2, 315,
@@ -343,11 +343,16 @@ export class ArenaScene extends Phaser.Scene {
 
   private beginGame(): void {
     if (this.gameStarted || this.countdownActive || this.settingsOverlay) return;
-    this.countdownActive = true;
-    this.countdownValue = 3;
     this.startOverlay?.destroy(true);
     this.startOverlay = undefined;
     this.music.start('exploration');
+    this.startRunCountdown(() => this.finishGameStart());
+  }
+
+  private startRunCountdown(onComplete: () => void): void {
+    if (this.countdownActive) return;
+    this.countdownActive = true;
+    this.countdownValue = 3;
     this.countdownText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2, '3', {
       fontSize: '112px', color: '#ffd477', fontStyle: 'bold',
       stroke: '#3a1524', strokeThickness: 12, padding: { x: 18, y: 12 },
@@ -363,7 +368,11 @@ export class ArenaScene extends Phaser.Scene {
           this.publishAccessibleStatus();
           return;
         }
-        this.finishGameStart();
+        this.countdownActive = false;
+        this.countdownValue = 0;
+        this.countdownText?.destroy();
+        this.countdownText = undefined;
+        onComplete();
       },
     });
     this.publishAccessibleStatus();
@@ -485,10 +494,6 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private finishGameStart(): void {
-    this.countdownActive = false;
-    this.countdownValue = 0;
-    this.countdownText?.destroy();
-    this.countdownText = undefined;
     this.gameStarted = true;
     this.player.setVisible(true);
 
@@ -712,7 +717,7 @@ export class ArenaScene extends Phaser.Scene {
       } else if (kind === 'archer') {
         enemy.maxHp = 68; enemy.speed = 88; enemy.hitRadius = 19; enemy.setCircle(73, 55, 55);
       } else {
-        enemy.maxHp = 1000; enemy.speed = 76; enemy.hitRadius = 35; enemy.setCircle(78, 50, 50);
+        enemy.maxHp = 1200; enemy.speed = 76; enemy.hitRadius = 35; enemy.setCircle(78, 50, 50);
       }
       enemy.hp = enemy.maxHp;
       enemy.setCollideWorldBounds(true).setBounce(0.15).setDepth(kind === 'boss' ? 5 : 4);
@@ -874,7 +879,7 @@ export class ArenaScene extends Phaser.Scene {
     this.bossHudGraphics.fillStyle(0x120b12, 0.96).fillRoundedRect(barX - 4, barY - 4, barWidth + 8, 22, 7);
     this.bossHudGraphics.fillStyle(phase === 1 ? 0xcc4f62 : phase === 2 ? 0xe16b4f : 0xf29a3f, 1)
       .fillRoundedRect(barX, barY, barWidth * ratio, 14, 5);
-    this.bossHealthText.setText(`재의 군주  ${Math.max(0, Math.ceil(boss.hp))} / ${boss.maxHp}  ·  ${phase}단계`).setVisible(true);
+    this.bossHealthText.setText(`화로의 수문장  ${Math.max(0, Math.ceil(boss.hp))} / ${boss.maxHp}  ·  ${phase}단계`).setVisible(true);
   }
 
   private clearBossTelegraph(): void {
@@ -1176,7 +1181,7 @@ export class ArenaScene extends Phaser.Scene {
       this.player.setVelocity(0).setTint(0x4b4350);
       this.enemies.setVelocityX(0); this.enemies.setVelocityY(0);
       this.enemyProjectiles.setVelocityX(0); this.enemyProjectiles.setVelocityY(0);
-      this.bannerText.setText('귀환 실패').setAlpha(1);
+      this.bannerText.setText('탈출 실패').setAlpha(1);
       this.showDeathChoices();
     }
   }
@@ -1257,7 +1262,7 @@ export class ArenaScene extends Phaser.Scene {
     const children: Phaser.GameObjects.GameObject[] = [];
     children.push(this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH - 70, GAME_HEIGHT - 60, 0x0d0a12, 0.98)
       .setStrokeStyle(3, 0xd99a55, 0.9));
-    children.push(this.add.text(GAME_WIDTH / 2, 72, `귀환자의 화로 · 보유 재 ${this.ashes}`, {
+    children.push(this.add.text(GAME_WIDTH / 2, 72, `잔불의 제단 · 보유 재 ${this.ashes}`, {
       fontSize: '34px', color: '#ffc77c', fontStyle: 'bold', padding: { x: 8, y: 6 },
     }).setOrigin(0.5));
     children.push(this.add.text(GAME_WIDTH / 2, 118, '대시 계열을 제외한 영구 능력 중 무작위 3개 · 다음 회차에도 유지', {
@@ -1389,7 +1394,7 @@ export class ArenaScene extends Phaser.Scene {
     this.roomIndex = 0;
     this.lastAttackAt = -1000;
     this.lastDashAt = -2000;
-    this.invulnerableUntil = this.time.now + 1000;
+    this.invulnerableUntil = 0;
     this.playerKnockbackUntil = 0;
     this.transitionLockUntil = 0;
     this.roomCleared = false;
@@ -1409,10 +1414,24 @@ export class ArenaScene extends Phaser.Scene {
     this.visitedRooms = new Set<number>();
     this.revealedRooms = new Set<number>([0]);
     this.rooms = createRandomRoomLayout();
-    this.bannerText.setVisible(true);
-    this.startRoom(0);
+    this.enemies.clear(true, true);
+    this.enemyProjectiles.clear(true, true);
+    this.hideBossHud();
+    this.hideAllExits();
+    this.player.setVelocity(0).setVisible(false);
+    this.gameStarted = false;
+    this.bannerText.setText('다음 회차 준비').setAlpha(1).setVisible(true);
+    this.drawArena(this.rooms[0].accent);
     this.updateBuildText();
     this.updateHud();
+    this.startRunCountdown(() => {
+      this.gameStarted = true;
+      this.player.setVisible(true);
+      this.invulnerableUntil = this.time.now + 1000;
+      this.startRoom(0);
+      this.updateBuildText();
+      this.updateHud();
+    });
   }
 
   private startCompletelyNewGame(): void {
@@ -1443,7 +1462,7 @@ export class ArenaScene extends Phaser.Scene {
     if (room.type === 'boss') {
       this.transitioning = true;
       this.hideBossHud();
-      this.bannerText.setText('재의 군주 격파').setAlpha(1);
+      this.bannerText.setText('화로의 수문장 격파 · 탈출구 개방').setAlpha(1);
       this.time.delayedCall(850, () => this.finishRun());
       return;
     }
@@ -1732,7 +1751,7 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private applyUpgrade(id: UpgradeId): void {
-    if (id === 'attackPower') this.attackDamage += 4;
+    if (id === 'attackPower') this.attackDamage += 5;
     if (id === 'attackSpeed') this.attackCooldown = Math.max(170, Math.round(this.attackCooldown * 0.94));
     if (id === 'attackRange') {
       this.attackRange = Math.round(this.attackRange * 1.1);
@@ -1743,8 +1762,8 @@ export class ArenaScene extends Phaser.Scene {
       this.hp = Math.min(this.maxHp, this.hp + 5);
     }
     if (id === 'moveSpeed') this.moveSpeed += 12.5;
-    if (id === 'dashCooldown') this.dashCooldown = Math.max(500, this.dashCooldown - 100);
-    if (id === 'dashDuration') this.dashDuration += 50;
+    if (id === 'dashCooldown') this.dashCooldown = Math.max(200, this.dashCooldown - 200);
+    if (id === 'dashDuration') this.dashDuration += 100;
     if (id === 'roomRecovery') this.roomRecovery += 4;
     if (id === 'criticalChance') this.criticalChance = Math.min(0.5, this.criticalChance + 0.05);
     if (id === 'ashArmor') this.damageReduction = Math.min(0.4, this.damageReduction + 0.04);
@@ -1821,7 +1840,7 @@ export class ArenaScene extends Phaser.Scene {
     this.player.setPosition(GAME_WIDTH / 2, GAME_HEIGHT / 2).setVelocity(0);
     this.hideBossHud();
     this.bannerText.setText(`던전 돌파 성공\n탐색 ${this.visitedRooms.size}/${this.rooms.length} · R 키로 다시 도전`).setAlpha(1);
-    this.roomText.setText('재의 군주 처치 완료');
+    this.roomText.setText('화로의 수문장 처치 · 탈출 성공');
     this.updateHud();
   }
 
@@ -1886,15 +1905,20 @@ export class ArenaScene extends Phaser.Scene {
     this.rooms.forEach((room) => {
       const x = originX + room.mapX * gap;
       const y = originY + room.mapY * gap;
+      const revealed = this.revealedRooms.has(room.id);
       let color = 0x29242f;
-      if (this.revealedRooms.has(room.id)) {
-        color = room.type === 'boss' ? 0xd95763 : room.type === 'healing' ? 0x64bd91 : room.type === 'shop' ? 0xe0ac3f : 0x766b82;
+      if (revealed) {
+        color = room.type === 'boss' ? 0xd95763 : room.type === 'healing' ? 0x4f8ed8 : room.type === 'shop' ? 0xe0ac3f : 0x766b82;
       }
-      if (this.clearedRooms.has(room.id)) color = 0x58a6a6;
+      if (this.clearedRooms.has(room.id) && room.type === 'combat') color = 0x58a6a6;
       if (room.id === this.roomIndex) color = 0xf7c86a;
-      this.miniMapGraphics.fillStyle(color, 1).fillCircle(x, y, room.type === 'boss' && this.revealedRooms.has(room.id) ? 9 : 7);
+      const radius = room.type === 'boss' && revealed ? 9 : room.type === 'healing' && revealed ? 8 : 7;
+      this.miniMapGraphics.fillStyle(color, 1).fillCircle(x, y, radius);
+      if (room.type === 'healing' && revealed) {
+        this.miniMapGraphics.lineStyle(3, 0x9bd5ff, 1).strokeCircle(x, y, 11);
+      }
       if (room.id === this.roomIndex) {
-        this.miniMapGraphics.lineStyle(2, 0xfff1c7, 1).strokeCircle(x, y, 11);
+        this.miniMapGraphics.lineStyle(2, 0xfff1c7, 1).strokeCircle(x, y, room.type === 'healing' ? 14 : 11);
       }
     });
   }

@@ -6,8 +6,8 @@ export const PERMANENT_UPGRADES: PermanentUpgradeDefinition[] = [
     name: '꺼지지 않는 심장',
     description: '모든 다음 회차의 최대 생명이 5 증가합니다.',
     maxLevel: 5,
-    baseCost: 18,
-    costStep: 12,
+    baseCost: 26,
+    costStep: 16,
     color: 0xdb667a,
   },
   {
@@ -48,7 +48,7 @@ export const PERMANENT_UPGRADES: PermanentUpgradeDefinition[] = [
   },
   {
     id: 'roomRecovery',
-    name: '귀환자의 온기',
+    name: '잔불의 온기',
     description: '모든 다음 회차의 전투방 정리 회복량이 2 증가합니다.',
     maxLevel: 4,
     baseCost: 24,

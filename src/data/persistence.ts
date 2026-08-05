@@ -12,7 +12,8 @@ export type RogueliteProgress = {
   settings: GameSettings;
 };
 
-const STORAGE_KEY = 'ash-return-roguelite-progress-v1';
+const STORAGE_KEY = 'abyssal-forge-progress-v1';
+const LEGACY_STORAGE_KEYS = ['ash-return-roguelite-progress-v1'];
 
 export const DEFAULT_SETTINGS: GameSettings = {
   musicVolume: 0.65,
@@ -33,7 +34,16 @@ export const loadRogueliteProgress = (): RogueliteProgress => {
     settings: { ...DEFAULT_SETTINGS },
   };
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    let raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      const legacyProgress = LEGACY_STORAGE_KEYS
+        .map((key) => window.localStorage.getItem(key))
+        .find((value): value is string => Boolean(value));
+      if (legacyProgress) {
+        raw = legacyProgress;
+        window.localStorage.setItem(STORAGE_KEY, legacyProgress);
+      }
+    }
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<RogueliteProgress>;
     return {
@@ -65,6 +75,7 @@ export const saveRogueliteProgress = (progress: RogueliteProgress): void => {
 export const clearRogueliteProgress = (): void => {
   try {
     window.localStorage.removeItem(STORAGE_KEY);
+    LEGACY_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
   } catch {
     // 브라우저 저장이 차단된 경우 메모리 상태 초기화만 수행한다.
   }
