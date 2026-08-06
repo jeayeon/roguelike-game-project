@@ -450,55 +450,34 @@ export class ArenaScene extends Phaser.Scene {
     }).setOrigin(0.5));
     const addVolumeRow = (label: string, y: number, key: keyof GameSettings): void => {
       const value = this.settings[key];
+      const trackLeft = 560;
+      const trackWidth = 160;
       children.push(this.add.text(455, y, label, {
         fontSize: '23px', color: '#e8dbe9', fontStyle: 'bold', padding: { x: 5, y: 4 },
       }).setOrigin(1, 0.5));
-      const minus = this.add.rectangle(520, y, 54, 48, 0x49394f, 1).setStrokeStyle(2, 0xa893b1, 1).setInteractive({ useHandCursor: true });
-      const plus = this.add.rectangle(760, y, 54, 48, 0x49394f, 1).setStrokeStyle(2, 0xa893b1, 1).setInteractive({ useHandCursor: true });
+      const minus = this.add.rectangle(500, y, 54, 48, 0x49394f, 1).setStrokeStyle(2, 0xa893b1, 1).setInteractive({ useHandCursor: true });
+      const plus = this.add.rectangle(780, y, 54, 48, 0x49394f, 1).setStrokeStyle(2, 0xa893b1, 1).setInteractive({ useHandCursor: true });
       minus.on('pointerdown', () => this.adjustVolume(key, -0.1));
       plus.on('pointerdown', () => this.adjustVolume(key, 0.1));
       children.push(minus, plus);
-      children.push(this.add.text(520, y, '−', { fontSize: '28px', color: '#fff2ce' }).setOrigin(0.5));
-      children.push(this.add.text(760, y, '+', { fontSize: '28px', color: '#fff2ce' }).setOrigin(0.5));
-      children.push(this.add.rectangle(640, y, 160, 18, 0x241c2a, 1).setStrokeStyle(2, 0x66556e, 1));
-      if (value > 0) children.push(this.add.rectangle(560 + value * 80, y, value * 160, 14, 0x79c7c3, 1).setOrigin(1, 0.5));
+      children.push(this.add.text(500, y, '−', { fontSize: '28px', color: '#fff2ce' }).setOrigin(0.5));
+      children.push(this.add.text(780, y, '+', { fontSize: '28px', color: '#fff2ce' }).setOrigin(0.5));
+      children.push(this.add.rectangle(trackLeft, y, trackWidth, 18, 0x241c2a, 1)
+        .setOrigin(0, 0.5).setStrokeStyle(2, 0x66556e, 1));
+      if (value > 0) {
+        children.push(this.add.rectangle(trackLeft, y, trackWidth * value, 14, 0x79c7c3, 1).setOrigin(0, 0.5));
+      }
       children.push(this.add.text(640, y - 35, `${Math.round(value * 100)}%`, {
         fontSize: '17px', color: '#bfe8e1', fontStyle: 'bold', padding: { x: 3, y: 2 },
       }).setOrigin(0.5));
     };
     addVolumeRow('배경음악', 300, 'musicVolume');
     addVolumeRow('효과음', 410, 'effectsVolume');
-    children.push(this.add.text(GAME_WIDTH / 2, 475, '전투 효과음 미리 듣기', {
-      fontSize: '17px', color: '#bcaec3', fontStyle: 'bold', padding: { x: 4, y: 3 },
-    }).setOrigin(0.5));
-    const addEffectPreview = (
-      x: number,
-      y: number,
-      label: string,
-      effect: Parameters<AdaptiveMusic['playEffect']>[0],
-      strokeColor: number,
-      width = 240,
-    ): void => {
-      const button = this.add.rectangle(x, y, width, 44, 0x49394f, 1)
-        .setStrokeStyle(2, strokeColor, 1).setInteractive({ useHandCursor: true });
-      button.on('pointerdown', () => this.music.playEffect(effect));
-      children.push(button);
-      children.push(this.add.text(x, y, label, {
-        fontSize: '16px', color: '#fff0df', fontStyle: 'bold', padding: { x: 3, y: 2 },
-      }).setOrigin(0.5));
-    };
-    addEffectPreview(190, 510, '검 공격 · 부웅', 'attack', 0xe2b36f);
-    addEffectPreview(490, 510, '적 베임 · 퍽', 'enemyHit', 0xd99a72);
-    addEffectPreview(790, 510, '플레이어 피격 · 충격', 'playerHit', 0xd27b8d);
-    addEffectPreview(1090, 510, '대시 · 샤악', 'dash', 0x8ac9da);
-    addEffectPreview(340, 568, '추적자 사망 · 으윽', 'stalkerDeath', 0xc87f72, 250);
-    addEffectPreview(640, 568, '골렘 사망 · 불꽃 소멸', 'bruteDeath', 0xb7a184, 250);
-    addEffectPreview(940, 568, '원거리 사망 · 아악', 'archerDeath', 0xb88bc8, 250);
-    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 650, 300, 52, 0x436b68, 1)
+    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 520, 300, 56, 0x436b68, 1)
       .setStrokeStyle(3, 0x91e3bd, 1).setInteractive({ useHandCursor: true });
     closeButton.on('pointerdown', () => this.closeSettings());
     children.push(closeButton);
-    children.push(this.add.text(GAME_WIDTH / 2, 650, '적용하고 돌아가기', {
+    children.push(this.add.text(GAME_WIDTH / 2, 520, '적용하고 돌아가기', {
       fontSize: '21px', color: '#e8fff3', fontStyle: 'bold', padding: { x: 5, y: 4 },
     }).setOrigin(0.5));
     this.settingsOverlay = this.add.container(0, 0, children).setDepth(240);
