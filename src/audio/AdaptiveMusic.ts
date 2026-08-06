@@ -156,7 +156,7 @@ export class AdaptiveMusic {
   }
 
   private getMusicGain(): number {
-    return Math.max(0.0001, (this.mode === 'boss' ? 0.35 : 0.27) * this.musicVolume);
+    return Math.max(0.0001, (this.mode === 'boss' ? 0.7 : 0.54) * this.musicVolume);
   }
 
   private getEffectsGain(): number {
