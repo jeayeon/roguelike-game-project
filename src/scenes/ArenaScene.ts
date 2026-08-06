@@ -13,6 +13,7 @@ import { getPermanentUpgradeCost, PERMANENT_UPGRADES } from '../data/permanentUp
 import {
   clearRogueliteProgress,
   DEFAULT_SETTINGS,
+  hasStoredRogueliteProgress,
   loadRogueliteProgress,
   saveRogueliteProgress,
   type GameSettings,
@@ -53,6 +54,7 @@ const ATTACK_ORIGIN_OFFSET = 18;
 const BOSS_WALL_VOLLEY_INTERVAL = 3200;
 const BOSS_WALL_TELEGRAPH_DURATION = 900;
 
+//Scan을 상속
 export class ArenaScene extends Phaser.Scene {
   private rooms: RoomDefinition[] = [];
   private player!: Phaser.Physics.Arcade.Sprite;
@@ -89,6 +91,8 @@ export class ArenaScene extends Phaser.Scene {
   private transitioning = false;
   private runFinished = false;
   private gameStarted = false;
+  private hasSavedProgress = false;
+  private skipNextPersistence = false;
   private countdownActive = false;
   private countdownValue = 0;
   private gamePaused = false;
@@ -142,9 +146,11 @@ export class ArenaScene extends Phaser.Scene {
   private debugInvincible = false;
   private exitPortals!: Record<Direction, Phaser.GameObjects.Arc>;
   private exitLabels!: Record<Direction, Phaser.GameObjects.Text>;
-  private readonly flushPersistentProgress = (): void => this.persistProgress();
+  private readonly flushPersistentProgress = (): void => {
+    if (!this.skipNextPersistence) this.persistProgress();
+  };
   private readonly flushProgressWhenHidden = (): void => {
-    if (document.visibilityState === 'hidden') this.persistProgress();
+    if (document.visibilityState === 'hidden' && !this.skipNextPersistence) this.persistProgress();
   };
 
   constructor() {
@@ -168,7 +174,7 @@ export class ArenaScene extends Phaser.Scene {
     window.addEventListener('pagehide', this.flushPersistentProgress);
     document.addEventListener('visibilitychange', this.flushProgressWhenHidden);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      this.persistProgress();
+      if (!this.skipNextPersistence) this.persistProgress();
       window.removeEventListener('pagehide', this.flushPersistentProgress);
       document.removeEventListener('visibilitychange', this.flushProgressWhenHidden);
       this.music.stop();
@@ -307,7 +313,7 @@ export class ArenaScene extends Phaser.Scene {
       fontSize: '22px', color: '#d9c8dc', padding: { x: 6, y: 5 },
     }).setOrigin(0.5));
     children.push(this.add.text(GAME_WIDTH / 2, 315,
-      '이동  WASD / 방향키\n공격  마우스 왼쪽 버튼 / J\n대시  SPACE\n방을 정리하고 방향문을 선택해 보스를 찾으세요', {
+      '이동  WASD / 방향키\n공격  마우스 왼쪽 버튼 / J\n대시/무적  SPACE\n방을 정리하고 방향문을 선택해 보스를 찾으세요', {
         fontSize: '20px', color: '#bcaec3', align: 'center', lineSpacing: 12,
         backgroundColor: '#17131de6', padding: { x: 28, y: 20 },
       }).setOrigin(0.5));
@@ -318,18 +324,41 @@ export class ArenaScene extends Phaser.Scene {
         fontSize: '18px', color: '#91e3bd', fontStyle: 'bold',
         backgroundColor: '#16241fe6', padding: { x: 14, y: 8 },
       }).setOrigin(0.5));
-    const startButton = this.add.rectangle(GAME_WIDTH / 2, 505, 330, 74, 0x6f344f, 1)
-      .setStrokeStyle(4, 0xf7c86a, 1).setInteractive({ useHandCursor: true });
-    startButton.on('pointerover', () => startButton.setFillStyle(0x8a405f, 1));
-    startButton.on('pointerout', () => startButton.setFillStyle(0x6f344f, 1));
-    startButton.on('pointerdown', () => this.beginGame());
-    children.push(startButton);
-    children.push(this.add.text(GAME_WIDTH / 2, 505, '게임 시작', {
-      fontSize: '28px', color: '#fff2ce', fontStyle: 'bold', padding: { x: 8, y: 6 },
-    }).setOrigin(0.5));
-    children.push(this.add.text(GAME_WIDTH / 2, 565, '버튼 클릭 또는 ENTER', {
-      fontSize: '16px', color: '#91869a', padding: { x: 4, y: 3 },
-    }).setOrigin(0.5));
+    if (this.hasSavedProgress) {
+      const continueButton = this.add.rectangle(465, 505, 300, 72, 0x436b68, 1)
+        .setStrokeStyle(4, 0x91e3bd, 1).setInteractive({ useHandCursor: true });
+      continueButton.on('pointerover', () => continueButton.setFillStyle(0x568781, 1));
+      continueButton.on('pointerout', () => continueButton.setFillStyle(0x436b68, 1));
+      continueButton.on('pointerdown', () => this.beginGame());
+      const newGameButton = this.add.rectangle(815, 505, 300, 72, 0x6f344f, 1)
+        .setStrokeStyle(4, 0xf7c86a, 1).setInteractive({ useHandCursor: true });
+      newGameButton.on('pointerover', () => newGameButton.setFillStyle(0x8a405f, 1));
+      newGameButton.on('pointerout', () => newGameButton.setFillStyle(0x6f344f, 1));
+      newGameButton.on('pointerdown', () => this.beginNewGameFromStart());
+      children.push(continueButton, newGameButton);
+      children.push(this.add.text(465, 505, '이어서 시작', {
+        fontSize: '26px', color: '#e8fff3', fontStyle: 'bold', padding: { x: 8, y: 6 },
+      }).setOrigin(0.5));
+      children.push(this.add.text(815, 505, '새로 시작', {
+        fontSize: '26px', color: '#fff2ce', fontStyle: 'bold', padding: { x: 8, y: 6 },
+      }).setOrigin(0.5));
+      children.push(this.add.text(GAME_WIDTH / 2, 565, 'ENTER: 이어서 시작  ·  새로 시작: 재와 화로 강화 초기화', {
+        fontSize: '16px', color: '#a99ba9', padding: { x: 4, y: 3 },
+      }).setOrigin(0.5));
+    } else {
+      const startButton = this.add.rectangle(GAME_WIDTH / 2, 505, 330, 74, 0x6f344f, 1)
+        .setStrokeStyle(4, 0xf7c86a, 1).setInteractive({ useHandCursor: true });
+      startButton.on('pointerover', () => startButton.setFillStyle(0x8a405f, 1));
+      startButton.on('pointerout', () => startButton.setFillStyle(0x6f344f, 1));
+      startButton.on('pointerdown', () => this.beginGame());
+      children.push(startButton);
+      children.push(this.add.text(GAME_WIDTH / 2, 505, '게임 시작', {
+        fontSize: '28px', color: '#fff2ce', fontStyle: 'bold', padding: { x: 8, y: 6 },
+      }).setOrigin(0.5));
+      children.push(this.add.text(GAME_WIDTH / 2, 565, '버튼 클릭 또는 ENTER', {
+        fontSize: '16px', color: '#91869a', padding: { x: 4, y: 3 },
+      }).setOrigin(0.5));
+    }
     const settingsButton = this.add.rectangle(GAME_WIDTH / 2, 625, 240, 48, 0x302837, 1)
       .setStrokeStyle(2, 0x9c8ba8, 1).setInteractive({ useHandCursor: true });
     settingsButton.on('pointerover', () => settingsButton.setFillStyle(0x44384d, 1));
@@ -349,6 +378,19 @@ export class ArenaScene extends Phaser.Scene {
     this.startOverlay = undefined;
     this.music.start('exploration');
     this.startRunCountdown(() => this.finishGameStart());
+  }
+
+  private beginNewGameFromStart(): void {
+    if (this.gameStarted || this.countdownActive || this.settingsOverlay) return;
+    clearRogueliteProgress();
+    this.hasSavedProgress = false;
+    this.ashes = 0;
+    this.permanentUpgradeLevels.clear();
+    this.resetTemporaryUpgrades();
+    this.hp = this.maxHp;
+    this.updateBuildText();
+    this.updateHud();
+    this.beginGame();
   }
 
   private startRunCountdown(onComplete: () => void): void {
@@ -724,7 +766,7 @@ export class ArenaScene extends Phaser.Scene {
       } else if (kind === 'archer') {
         enemy.maxHp = 68; enemy.speed = 88; enemy.hitRadius = 19; enemy.setCircle(73, 55, 55);
       } else {
-        enemy.maxHp = 1200; enemy.speed = 76; enemy.hitRadius = 35; enemy.setCircle(78, 50, 50);
+        enemy.maxHp = 2000; enemy.speed = 76; enemy.hitRadius = 35; enemy.setCircle(78, 50, 50);
       }
       enemy.hp = enemy.maxHp;
       enemy.setCollideWorldBounds(true).setBounce(0.15).setDepth(kind === 'boss' ? 5 : 4);
@@ -781,9 +823,9 @@ export class ArenaScene extends Phaser.Scene {
   private queueBossAttack(boss: Enemy, time: number): void {
     const phase = this.getBossPhase(boss);
     const patterns = {
-      1: { name: '삼연 화염', warning: '3방향 탄막', windup: 520, interval: 1550 },
-      2: { name: '부채꼴 폭발', warning: '5방향 탄막', windup: 450, interval: 1300 },
-      3: { name: '재의 고리', warning: '전방위 탄막', windup: 360, interval: 1050 },
+      1: { name: '삼연 화염', warning: '3방향 탄막', windup: 520, interval: 1600 },
+      2: { name: '부채꼴 폭발', warning: '5방향 탄막', windup: 450, interval: 1400 },
+      3: { name: '재의 고리', warning: '전방위 탄막', windup: 660, interval: 1200 },
     } as const;
     const pattern = patterns[phase];
     const lockedAngle = Phaser.Math.Angle.Between(boss.x, boss.y, this.player.x, this.player.y);
@@ -1090,7 +1132,7 @@ export class ArenaScene extends Phaser.Scene {
           } as const;
           this.music.playEffect(deathEffect[enemy.kind]);
           if (enemy.kind === 'boss') this.clearBossTelegraph();
-          const ashReward: Record<EnemyKind, number> = { stalker: 2, brute: 4, archer: 3, boss: 33 };
+          const ashReward: Record<EnemyKind, number> = { stalker: 1, brute: 3, archer: 2, boss: 33 };
           this.ashes += ashReward[enemy.kind];
           this.persistProgress();
           enemy.destroy();
@@ -1448,10 +1490,10 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private startCompletelyNewGame(): void {
+    this.skipNextPersistence = true;
     clearRogueliteProgress();
     this.ashes = 0;
     this.permanentUpgradeLevels.clear();
-    this.persistProgress();
     this.scene.restart();
   }
 
@@ -1852,9 +1894,77 @@ export class ArenaScene extends Phaser.Scene {
     this.transitioning = false;
     this.player.setPosition(GAME_WIDTH / 2, GAME_HEIGHT / 2).setVelocity(0);
     this.hideBossHud();
-    this.bannerText.setText(`던전 돌파 성공\n탐색 ${this.visitedRooms.size}/${this.rooms.length} · R 키로 다시 도전`).setAlpha(1);
+    this.music.setMode('exploration');
+    this.bannerText.setVisible(false);
     this.roomText.setText('화로의 수문장 처치 · 탈출 성공');
     this.updateHud();
+    this.showEndingCredits();
+  }
+
+  private showEndingCredits(): void {
+    const depth = 100;
+    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x08060d, 0.98)
+      .setDepth(depth).setInteractive();
+
+    const credits = [
+      'ENDING CREDITS',
+      '',
+      'GAME DESIGN & DEVELOPMENT',
+      '개인 참가작',
+      '',
+      'GAME ENGINE',
+      'Phaser · TypeScript · Vite',
+      '',
+      'AI COLLABORATION',
+      'OpenAI Codex',
+      '',
+      'ART & ANIMATION',
+      'AI 생성 원본 에셋 · Phaser 애니메이션',
+      '',
+      'MUSIC & SOUND',
+      'Web Audio 기반 배경음악 및 전투 효과음',
+      '',
+      'SPECIAL THANKS',
+      '심연의 화로를 플레이해 주신 모든 분께',
+      '',
+      'THANK YOU FOR PLAYING',
+    ].join('\n');
+
+    const creditsText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 55, credits, {
+      fontSize: '18px', color: '#d8c9dc', align: 'center', lineSpacing: 8,
+    }).setOrigin(0.5, 0).setDepth(depth + 1);
+
+    this.tweens.add({
+      targets: creditsText,
+      y: 20,
+      duration: 22000,
+      ease: 'Linear',
+    });
+
+    this.add.rectangle(GAME_WIDTH / 2, 125, GAME_WIDTH, 250, 0x08060d, 1).setDepth(depth + 2);
+    this.add.text(GAME_WIDTH / 2, 52, '심연의 화로', {
+      fontSize: '42px', color: '#f7c86a', fontStyle: 'bold',
+      stroke: '#512239', strokeThickness: 6, padding: { x: 10, y: 8 },
+    }).setOrigin(0.5).setDepth(depth + 3);
+    this.add.text(GAME_WIDTH / 2, 113, '수문장이 무너지고, 마침내 심연 밖으로 향하는 길이 열렸습니다.', {
+      fontSize: '19px', color: '#cdbbd2',
+    }).setOrigin(0.5).setDepth(depth + 3);
+    this.add.text(GAME_WIDTH / 2, 164,
+      `탈출 기록  ·  탐색 ${this.visitedRooms.size}/${this.rooms.length}  ·  처치 ${this.kills}  ·  보유 재 ${this.ashes}`, {
+        fontSize: '18px', color: '#91e3bd', fontStyle: 'bold',
+        backgroundColor: '#14251fe6', padding: { x: 18, y: 9 },
+      }).setOrigin(0.5).setDepth(depth + 3);
+
+    this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT - 34, GAME_WIDTH, 68, 0x08060d, 1).setDepth(depth + 2);
+    const retryButton = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT - 38, 250, 44, 0x51324a, 1)
+      .setStrokeStyle(2, 0xf1c46b, 1).setInteractive({ useHandCursor: true }).setDepth(depth + 3);
+    const retryText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 38, 'R 키 / 클릭 · 다시 도전', {
+      fontSize: '17px', color: '#ffe5a5', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(depth + 4);
+    retryButton.on('pointerover', () => retryButton.setFillStyle(0x72435e, 1));
+    retryButton.on('pointerout', () => retryButton.setFillStyle(0x51324a, 1));
+    retryButton.on('pointerdown', () => this.scene.restart());
+    retryText.setInteractive({ useHandCursor: true }).on('pointerdown', () => this.scene.restart());
   }
 
   private createExitPortals(): void {
@@ -2017,6 +2127,10 @@ export class ArenaScene extends Phaser.Scene {
       lastCombatRecovery: this.lastCombatRecovery ?? null,
       runFinished: this.runFinished,
       restartAvailable: this.hp <= 0 || this.runFinished,
+      hasSavedProgress: this.hasSavedProgress,
+      startChoices: !this.gameStarted && !this.countdownActive
+        ? this.hasSavedProgress ? ['continue_saved_progress', 'new_game_reset_progress'] : ['start_game']
+        : [],
       deathChoices: this.hp <= 0 && !this.awaitingPermanentUpgrade
         ? ['continue_to_permanent_upgrades', 'new_game_reset_all']
         : [],
@@ -2024,6 +2138,7 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private resetRunState(): void {
+    this.skipNextPersistence = false;
     this.rooms = createRandomRoomLayout();
     this.hp = 50; this.maxHp = 50; this.kills = 0; this.ashes = 0; this.roomIndex = 0;
     this.attackDamage = 34; this.attackCooldown = ATTACK_COOLDOWN; this.attackRange = 74; this.attackArcAngle = 0.92;
@@ -2049,6 +2164,7 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private loadPersistedProgress(): void {
+    this.hasSavedProgress = hasStoredRogueliteProgress();
     const progress = loadRogueliteProgress();
     this.ashes = progress.ashes;
     this.settings = { ...progress.settings };

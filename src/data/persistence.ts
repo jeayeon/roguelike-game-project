@@ -15,6 +15,15 @@ export type RogueliteProgress = {
 const STORAGE_KEY = 'abyssal-forge-progress-v1';
 const LEGACY_STORAGE_KEYS = ['ash-return-roguelite-progress-v1'];
 
+export const hasStoredRogueliteProgress = (): boolean => {
+  try {
+    return [STORAGE_KEY, ...LEGACY_STORAGE_KEYS]
+      .some((key) => Boolean(window.localStorage.getItem(key)));
+  } catch {
+    return false;
+  }
+};
+
 export const DEFAULT_SETTINGS: GameSettings = {
   musicVolume: 0.65,
   effectsVolume: 0.75,

@@ -23,6 +23,27 @@ const COMBAT_TEMPLATES: CombatTemplate[] = [
   { name: '심연의 핵 앞뜰', description: '출구를 지키는 수문장에게 향하는 길을 여세요', accent: 0x7b3d49, enemies: ['stalker', 'stalker', 'stalker', 'stalker', 'brute', 'brute', 'brute', 'brute', 'archer', 'archer'] },
 ];
 
+// 낮아진 개별 처치 보상을 보완하면서 모든 전투방에 사수를 최소 1명 더 배치한다.
+// 각 행의 추가 적 보상 합계는 변경 전 해당 방의 재 획득량 감소분과 같다.
+const EXTRA_ENEMIES_BY_TEMPLATE: EnemyKind[][] = [
+  ['archer', 'brute', 'stalker'],
+  ['archer', 'brute', 'brute'],
+  ['archer', 'archer', 'brute'],
+  ['archer', 'archer', 'brute'],
+  ['archer', 'archer', 'brute'],
+  ['archer', 'brute', 'brute'],
+  ['archer', 'brute', 'brute'],
+  ['archer', 'brute', 'brute'],
+  ['archer', 'brute', 'brute', 'stalker'],
+  ['archer', 'brute', 'brute', 'stalker'],
+  ['archer', 'brute', 'brute', 'stalker'],
+  ['archer', 'brute', 'brute', 'stalker'],
+  ['archer', 'brute', 'brute', 'stalker'],
+  ['archer', 'archer', 'brute', 'brute'],
+  ['archer', 'brute', 'brute', 'stalker'],
+  ['archer', 'archer', 'brute', 'brute'],
+];
+
 const createExits = (id: number): RoomDefinition['exits'] => {
   const x = id % GRID_SIZE;
   const y = Math.floor(id / GRID_SIZE);
@@ -37,6 +58,7 @@ const createExits = (id: number): RoomDefinition['exits'] => {
 export const ROOMS: RoomDefinition[] = COMBAT_TEMPLATES.map((template, id) => ({
   id,
   ...template,
+  enemies: [...template.enemies, ...EXTRA_ENEMIES_BY_TEMPLATE[id]],
   mapX: id % GRID_SIZE,
   mapY: Math.floor(id / GRID_SIZE),
   type: 'combat',
@@ -48,7 +70,7 @@ const SPECIAL_ROOM_CONTENT: Record<Exclude<RoomType, 'combat'>, CombatTemplate> 
   shop: { name: '잿빛 시장', description: '전투에서 모은 재로 힘을 거래하세요', accent: 0xb88935, enemies: [] },
   boss: {
     name: '심연의 핵', description: '화로의 수문장을 쓰러뜨리고 탈출구를 여세요', accent: 0x9a3d49,
-    enemies: ['boss', 'stalker', 'stalker', 'archer', 'archer'],
+    enemies: ['boss', 'stalker', 'stalker', 'archer', 'archer', 'archer', 'archer'],
   },
 };
 
