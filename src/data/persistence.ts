@@ -1,14 +1,16 @@
-import type { PermanentUpgradeId } from '../types/game';
+import type { Difficulty, PermanentUpgradeId } from '../types/game';
 
 export type GameSettings = {
   musicVolume: number;
   effectsVolume: number;
+  targetMode: 'auto' | 'manual';
 };
 
 export type RogueliteProgress = {
   version: 1;
   ashes: number;
   permanentUpgrades: Partial<Record<PermanentUpgradeId, number>>;
+  highestUnlockedDifficulty: Difficulty;
   settings: GameSettings;
 };
 
@@ -27,7 +29,12 @@ export const hasStoredRogueliteProgress = (): boolean => {
 export const DEFAULT_SETTINGS: GameSettings = {
   musicVolume: 0.65,
   effectsVolume: 0.75,
+  targetMode: 'manual',
 };
+
+const parseDifficulty = (value: unknown): Difficulty => (
+  value === 'normal' || value === 'hard' ? value : 'easy'
+);
 
 const clampVolume = (value: unknown, fallback: number): number => (
   typeof value === 'number' && Number.isFinite(value)
@@ -40,6 +47,7 @@ export const loadRogueliteProgress = (): RogueliteProgress => {
     version: 1,
     ashes: 0,
     permanentUpgrades: {},
+    highestUnlockedDifficulty: 'easy',
     settings: { ...DEFAULT_SETTINGS },
   };
   try {
@@ -63,9 +71,11 @@ export const loadRogueliteProgress = (): RogueliteProgress => {
       permanentUpgrades: parsed.permanentUpgrades && typeof parsed.permanentUpgrades === 'object'
         ? parsed.permanentUpgrades
         : {},
+      highestUnlockedDifficulty: parseDifficulty(parsed.highestUnlockedDifficulty),
       settings: {
         musicVolume: clampVolume(parsed.settings?.musicVolume, DEFAULT_SETTINGS.musicVolume),
         effectsVolume: clampVolume(parsed.settings?.effectsVolume, DEFAULT_SETTINGS.effectsVolume),
+        targetMode: parsed.settings?.targetMode === 'auto' ? 'auto' : 'manual',
       },
     };
   } catch {

@@ -68,6 +68,10 @@ export const ROOMS: RoomDefinition[] = COMBAT_TEMPLATES.map((template, id) => ({
 const SPECIAL_ROOM_CONTENT: Record<Exclude<RoomType, 'combat'>, CombatTemplate> = {
   healing: { name: '고요한 샘', description: '상처를 회복할 방법을 선택하세요', accent: 0x3f7c6b, enemies: [] },
   shop: { name: '잿빛 시장', description: '전투에서 모은 재로 힘을 거래하세요', accent: 0xb88935, enemies: [] },
+  midboss: {
+    name: '균열의 파수꾼', description: '돌진을 유도하고 반월 참격을 대시로 피하세요', accent: 0x7652a8,
+    enemies: ['midboss', 'archer', 'archer', 'brute', 'brute'],
+  },
   boss: {
     name: '심연의 핵', description: '화로의 수문장을 쓰러뜨리고 탈출구를 여세요', accent: 0x9a3d49,
     enemies: ['boss', 'stalker', 'stalker', 'archer', 'archer', 'archer', 'archer'],
@@ -86,18 +90,25 @@ const shuffle = <T>(values: T[], random: () => number): T[] => {
 export const createRandomRoomLayout = (random: () => number = Math.random): RoomDefinition[] => {
   const bossCandidates = ROOMS.filter((room) => room.mapX + room.mapY >= 4).map((room) => room.id);
   const bossId = shuffle(bossCandidates, random)[0];
-  const specialCandidates = shuffle(ROOMS.map((room) => room.id).filter((id) => id !== 0 && id !== bossId), random);
+  const midbossCandidates = ROOMS
+    .filter((room) => room.id !== bossId && room.mapX + room.mapY >= 2)
+    .map((room) => room.id);
+  const midbossId = shuffle(midbossCandidates, random)[0];
+  const specialCandidates = shuffle(ROOMS.map((room) => room.id)
+    .filter((id) => id !== 0 && id !== bossId && id !== midbossId), random);
   const healingId = specialCandidates[0];
   const shopId = specialCandidates[1];
 
   return ROOMS.map((baseRoom) => {
     const type: RoomType = baseRoom.id === bossId
       ? 'boss'
-      : baseRoom.id === healingId
-        ? 'healing'
-        : baseRoom.id === shopId
-          ? 'shop'
-          : 'combat';
+      : baseRoom.id === midbossId
+        ? 'midboss'
+        : baseRoom.id === healingId
+          ? 'healing'
+          : baseRoom.id === shopId
+            ? 'shop'
+            : 'combat';
     const content = type === 'combat' ? baseRoom : SPECIAL_ROOM_CONTENT[type];
     return { ...baseRoom, ...content, type, enemies: [...content.enemies], exits: { ...baseRoom.exits } };
   });

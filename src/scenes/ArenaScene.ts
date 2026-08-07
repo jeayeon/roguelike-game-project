@@ -21,6 +21,7 @@ import {
 import { UPGRADES } from '../data/upgrades';
 import type {
   Direction,
+  Difficulty,
   Enemy,
   EnemyKind,
   EnemyProjectile,
@@ -30,6 +31,7 @@ import type {
   RoomDefinition,
   UpgradeDefinition,
   UpgradeId,
+  WeaponType,
 } from '../types/game';
 
 type SpecialChoice = {
@@ -47,12 +49,76 @@ const ROOM_PORTAL_STYLE: Record<RoomType, { fill: number; stroke: number; text: 
   combat: { fill: 0x5fc7d8, stroke: 0xbef4ff, text: '#bef4ff', label: '전투방' },
   healing: { fill: 0x42c77a, stroke: 0x9af0b8, text: '#9af0b8', label: '회복방' },
   shop: { fill: 0xe0ac3f, stroke: 0xffdd76, text: '#ffdd76', label: '상점방' },
+  midboss: { fill: 0x8b5bd1, stroke: 0xd4b0ff, text: '#d4b0ff', label: '중간 보스방' },
   boss: { fill: 0xd94b5b, stroke: 0xff8792, text: '#ff8792', label: '보스방' },
 };
 
 const ATTACK_ORIGIN_OFFSET = 18;
 const BOSS_WALL_VOLLEY_INTERVAL = 3200;
 const BOSS_WALL_TELEGRAPH_DURATION = 900;
+const BOSS_CORNER_DASH_SPEED = 560;
+const BOSS_CORNER_DASH_DURATION = 420;
+const BOSS_CORNER_DASH_COOLDOWN = 2800;
+const MIDBOSS_ATTACK_RANGE = 240;
+const MIDBOSS_ATTACK_WINDUP = 750;
+const MIDBOSS_ATTACK_COOLDOWN = 1300;
+const SHOW_DAMAGE_NUMBERS = true;
+const DIFFICULTY_ORDER: Difficulty[] = ['easy', 'normal', 'hard'];
+const DIFFICULTY_LABELS: Record<Difficulty, string> = {
+  easy: '이지', normal: '노말', hard: '하드',
+};
+const DIFFICULTY_DESCRIPTIONS: Record<Difficulty, string> = {
+  easy: '보스 2단계 · 벽 불덩이 없음',
+  normal: '현재 기본 난이도',
+  hard: '모든 전투방 벽 불덩이 강화',
+};
+const BOSS_HEALTH_BY_DIFFICULTY: Record<Difficulty, number> = {
+  easy: 2000, normal: 3000, hard: 4000,
+};
+const UPGRADE_REROLL_COST = 8;
+type WeaponDefinition = {
+  name: string;
+  description: string;
+  attackDamage: number;
+  attackCooldown: number;
+  attackRange: number;
+  attackArcAngle: number;
+  attackDuration: number;
+  walkTexture: string;
+  attackAnimation: string;
+  walkAnimation: string;
+  displaySize: number;
+  bodyRadius: number;
+  bodyOffset: number;
+  color: number;
+};
+const WEAPON_ORDER: WeaponType[] = ['sword', 'spear', 'axe'];
+const WEAPONS: Record<WeaponType, WeaponDefinition> = {
+  sword: {
+    name: '잿불의 검', description: '균형 잡힌 부채꼴 공격',
+    attackDamage: 34, attackCooldown: ATTACK_COOLDOWN, attackRange: 74, attackArcAngle: 0.92,
+    attackDuration: 260, walkTexture: 'player', attackAnimation: 'player-attack', walkAnimation: 'player-walk',
+    displaySize: 72, bodyRadius: 70, bodyOffset: 58, color: 0xf7c86a,
+  },
+  spear: {
+    name: '균열의 창', description: '가장 긴 직선형 관통 범위',
+    attackDamage: 34, attackCooldown: ATTACK_COOLDOWN, attackRange: 138, attackArcAngle: 0.14,
+    attackDuration: 250, walkTexture: 'playerSpear', attackAnimation: 'player-spear-attack', walkAnimation: 'player-spear-walk',
+    displaySize: 105, bodyRadius: 49, bodyOffset: 79, color: 0x8ee7f2,
+  },
+  axe: {
+    name: '심연의 도끼', description: '넓고 강하지만 느린 부채꼴 공격',
+    attackDamage: 44, attackCooldown: ATTACK_COOLDOWN * 2, attackRange: 111, attackArcAngle: 1.08,
+    attackDuration: 520, walkTexture: 'playerAxe', attackAnimation: 'player-axe-attack', walkAnimation: 'player-axe-walk',
+    displaySize: 105, bodyRadius: 49, bodyOffset: 79, color: 0xff9a63,
+  },
+};
+const BASE_STATS = {
+  maxHp: 50,
+  moveSpeed: 260,
+  dashCooldown: 1000,
+  dashDuration: 240,
+} as const;
 
 //Scan을 상속
 export class ArenaScene extends Phaser.Scene {
@@ -63,6 +129,7 @@ export class ArenaScene extends Phaser.Scene {
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
   private attackKey!: Phaser.Input.Keyboard.Key;
+  private weapon: WeaponType = 'sword';
   private hp = 50;
   private maxHp = 50;
   private attackDamage = 34;
@@ -92,6 +159,9 @@ export class ArenaScene extends Phaser.Scene {
   private runFinished = false;
   private gameStarted = false;
   private hasSavedProgress = false;
+  private difficulty: Difficulty = 'easy';
+  private highestUnlockedDifficulty: Difficulty = 'easy';
+  private newlyUnlockedDifficulty?: Difficulty;
   private skipNextPersistence = false;
   private countdownActive = false;
   private countdownValue = 0;
@@ -100,20 +170,26 @@ export class ArenaScene extends Phaser.Scene {
   private awaitingUpgrade = false;
   private awaitingSpecial = false;
   private awaitingPermanentUpgrade = false;
+  private awaitingWeaponSelection = false;
   private acquiredUpgrades = new Map<UpgradeId, number>();
   private permanentUpgradeLevels = new Map<PermanentUpgradeId, number>();
   private permanentUpgradeChoices: PermanentUpgradeDefinition[] = [];
   private upgradeChoices: UpgradeDefinition[] = [];
+  private rerolledUpgradeRooms = new Set<number>();
+  private upgradeRerollMessage = '';
   private upgradeOverlay?: Phaser.GameObjects.Container;
   private specialOverlay?: Phaser.GameObjects.Container;
   private specialChoices: SpecialChoice[] = [];
   private specialFeedbackText?: Phaser.GameObjects.Text;
   private restartOverlay?: Phaser.GameObjects.Container;
   private permanentOverlay?: Phaser.GameObjects.Container;
+  private weaponOverlay?: Phaser.GameObjects.Container;
+  private weaponSelectionCallback?: () => void;
   private permanentPurchaseMessage = '';
   private startOverlay?: Phaser.GameObjects.Container;
   private pauseOverlay?: Phaser.GameObjects.Container;
   private settingsOverlay?: Phaser.GameObjects.Container;
+  private statsOverlay?: Phaser.GameObjects.Container;
   private settingsReturnTo: 'start' | 'pause' = 'start';
   private countdownText?: Phaser.GameObjects.Text;
   private music = new AdaptiveMusic();
@@ -137,12 +213,17 @@ export class ArenaScene extends Phaser.Scene {
   private bossTelegraphGraphics!: Phaser.GameObjects.Graphics;
   private bossWallTelegraphGraphics!: Phaser.GameObjects.Graphics;
   private bossWallWarningText!: Phaser.GameObjects.Text;
+  private midBossTelegraphGraphics!: Phaser.GameObjects.Graphics;
+  private midBossSwingGraphics!: Phaser.GameObjects.Graphics;
+  private midBossSwingTween?: Phaser.Tweens.Tween;
+  private midBossWarningText!: Phaser.GameObjects.Text;
   private bossPhaseText!: Phaser.GameObjects.Text;
   private bossTelegraphActive = false;
   private nextBossWallVolleyAt = Number.POSITIVE_INFINITY;
   private bossWallVolleyFlipped = false;
   private pendingBossWallVolley = false;
   private pendingBossWallVolleyFlipped = false;
+  private hitStopTimer?: number;
   private debugInvincible = false;
   private exitPortals!: Record<Direction, Phaser.GameObjects.Arc>;
   private exitLabels!: Record<Direction, Phaser.GameObjects.Text>;
@@ -152,6 +233,7 @@ export class ArenaScene extends Phaser.Scene {
   private readonly flushProgressWhenHidden = (): void => {
     if (document.visibilityState === 'hidden' && !this.skipNextPersistence) this.persistProgress();
   };
+  private readonly preventContextMenu = (event: MouseEvent): void => event.preventDefault();
 
   constructor() {
     super('arena');
@@ -163,7 +245,13 @@ export class ArenaScene extends Phaser.Scene {
     ['player', 'stalker', 'brute', 'archer', 'boss'].forEach((key) => {
       this.load.spritesheet(key, `${walkAssetPath}/${key}-walk.png`, { frameWidth: 256, frameHeight: 256 });
     });
+    this.load.spritesheet('midboss', `${walkAssetPath}/midboss-walk.png`, { frameWidth: 256, frameHeight: 256 });
+    this.load.spritesheet('midbossAttack', `${characterAssetPath}/midboss-attack.png`, { frameWidth: 256, frameHeight: 256 });
     this.load.spritesheet('playerAttack', `${characterAssetPath}/player-attack.png`, { frameWidth: 256, frameHeight: 256 });
+    this.load.spritesheet('playerSpear', `${walkAssetPath}/player-spear-walk.png`, { frameWidth: 256, frameHeight: 256 });
+    this.load.spritesheet('playerSpearAttack', `${characterAssetPath}/player-spear-attack.png`, { frameWidth: 256, frameHeight: 256 });
+    this.load.spritesheet('playerAxe', `${walkAssetPath}/player-axe-walk.png`, { frameWidth: 256, frameHeight: 256 });
+    this.load.spritesheet('playerAxeAttack', `${characterAssetPath}/player-axe-attack.png`, { frameWidth: 256, frameHeight: 256 });
     const projectileAssetPath = `${import.meta.env.BASE_URL}assets/projectiles`;
     this.load.spritesheet('iceArrow', `${projectileAssetPath}/ice-arrow.png`, { frameWidth: 256, frameHeight: 256 });
     this.load.spritesheet('fireball', `${projectileAssetPath}/fireball.png`, { frameWidth: 256, frameHeight: 256 });
@@ -173,10 +261,13 @@ export class ArenaScene extends Phaser.Scene {
     this.resetRunState();
     window.addEventListener('pagehide', this.flushPersistentProgress);
     document.addEventListener('visibilitychange', this.flushProgressWhenHidden);
+    document.addEventListener('contextmenu', this.preventContextMenu);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      if (this.hitStopTimer !== undefined) window.clearTimeout(this.hitStopTimer);
       if (!this.skipNextPersistence) this.persistProgress();
       window.removeEventListener('pagehide', this.flushPersistentProgress);
       document.removeEventListener('visibilitychange', this.flushProgressWhenHidden);
+      document.removeEventListener('contextmenu', this.preventContextMenu);
       this.music.stop();
     });
     this.createAnimations();
@@ -211,6 +302,10 @@ export class ArenaScene extends Phaser.Scene {
     });
     this.input.keyboard!.on('keydown', (event: KeyboardEvent) => {
       this.music.unlock();
+      if (this.statsOverlay && (event.key === 'Escape' || event.key.toLowerCase() === 'c')) {
+        this.closePlayerStats();
+        return;
+      }
       if (this.settingsOverlay && (event.key === 'Escape' || event.key.toLowerCase() === 'p')) {
         this.closeSettings();
         return;
@@ -221,14 +316,26 @@ export class ArenaScene extends Phaser.Scene {
       }
       if (this.settingsOverlay) return;
       if (this.gamePaused) return;
+      const choiceIndex = Number(event.key) - 1;
+      if (this.awaitingWeaponSelection) {
+        if (choiceIndex >= 0 && choiceIndex < WEAPON_ORDER.length) this.selectWeapon(WEAPON_ORDER[choiceIndex]);
+        return;
+      }
+      if (event.key.toLowerCase() === 'c' && this.gameStarted && !this.awaitingUpgrade && !this.awaitingSpecial) {
+        this.showPlayerStats();
+        return;
+      }
       if (!this.gameStarted && event.key === 'Enter') {
         this.beginGame();
         return;
       }
-      const choiceIndex = Number(event.key) - 1;
       if (this.awaitingPermanentUpgrade) {
         if (choiceIndex >= 0 && choiceIndex < this.permanentUpgradeChoices.length) this.purchasePermanentUpgrade(choiceIndex);
         else if (event.key === 'Enter' || event.key === 'Escape' || event.key === '4') this.startContinuedRun();
+        return;
+      }
+      if (this.awaitingUpgrade && event.key.toLowerCase() === 'r') {
+        this.rerollUpgradeChoices();
         return;
       }
       if (this.awaitingUpgrade && choiceIndex >= 0 && choiceIndex < this.upgradeChoices.length) this.selectUpgrade(choiceIndex);
@@ -248,6 +355,8 @@ export class ArenaScene extends Phaser.Scene {
       .setStrokeStyle(5, 0xff8090, 1).setVisible(false).setDepth(7);
     this.bossTelegraphGraphics = this.add.graphics().setDepth(7);
     this.bossWallTelegraphGraphics = this.add.graphics().setDepth(7);
+    this.midBossTelegraphGraphics = this.add.graphics().setDepth(8);
+    this.midBossSwingGraphics = this.add.graphics().setDepth(9);
     this.createExitPortals();
 
     this.bossHudGraphics = this.add.graphics().setDepth(24);
@@ -265,6 +374,10 @@ export class ArenaScene extends Phaser.Scene {
     this.bossWallWarningText = this.add.text(GAME_WIDTH / 2, 165, '', {
       fontSize: '21px', color: '#ffca87', fontStyle: 'bold', align: 'center',
       stroke: '#35131b', strokeThickness: 5, padding: { x: 8, y: 6 },
+    }).setOrigin(0.5).setVisible(false).setDepth(25);
+    this.midBossWarningText = this.add.text(GAME_WIDTH / 2, 112, '', {
+      fontSize: '24px', color: '#d9b6ff', fontStyle: 'bold', align: 'center',
+      stroke: '#241437', strokeThickness: 6, padding: { x: 8, y: 6 },
     }).setOrigin(0.5).setVisible(false).setDepth(25);
 
     this.hpText = this.add.text(18, 14, '', {
@@ -286,7 +399,7 @@ export class ArenaScene extends Phaser.Scene {
       stroke: '#3a1d2d', strokeThickness: 6,
     }).setOrigin(0.5).setDepth(22);
     this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 20,
-      '이동 WASD/방향키  ·  공격 마우스 클릭/J  ·  대시 SPACE  ·  방 정리 후 방향문 선택', {
+      '이동 WASD/방향키  ·  공격 마우스 클릭/J  ·  대시 SPACE  ·  상태창 C  ·  방 정리 후 방향문 선택', {
         fontSize: '17px', color: '#b7abbf',
       }).setOrigin(0.5, 1).setDepth(22);
     this.add.text(GAME_WIDTH - 35, 72, '탐색 지도', {
@@ -303,81 +416,198 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private showStartScreen(): void {
+    this.startOverlay?.destroy(true);
     const children: Phaser.GameObjects.GameObject[] = [];
     children.push(this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x0b0810, 0.97).setInteractive());
-    children.push(this.add.text(GAME_WIDTH / 2, 145, '심연의 화로', {
+    children.push(this.add.text(GAME_WIDTH / 2, 92, '심연의 화로', {
       fontSize: '58px', color: '#f7c86a', fontStyle: 'bold',
       stroke: '#512239', strokeThickness: 8, padding: { x: 12, y: 10 },
     }).setOrigin(0.5));
-    children.push(this.add.text(GAME_WIDTH / 2, 220, '심연의 화로를 돌파하고 수문장을 쓰러뜨려 탈출하세요', {
+    children.push(this.add.text(GAME_WIDTH / 2, 155, '심연의 화로를 돌파하고 수문장을 쓰러뜨려 탈출하세요', {
       fontSize: '22px', color: '#d9c8dc', padding: { x: 6, y: 5 },
     }).setOrigin(0.5));
-    children.push(this.add.text(GAME_WIDTH / 2, 315,
+    children.push(this.add.text(GAME_WIDTH / 2, 245,
       '이동  WASD / 방향키\n공격  마우스 왼쪽 버튼 / J\n대시/무적  SPACE\n방을 정리하고 방향문을 선택해 보스를 찾으세요', {
         fontSize: '20px', color: '#bcaec3', align: 'center', lineSpacing: 12,
-        backgroundColor: '#17131de6', padding: { x: 28, y: 20 },
+        backgroundColor: '#17131de6', padding: { x: 28, y: 15 },
       }).setOrigin(0.5));
+    children.push(this.add.text(GAME_WIDTH / 2, 345, `난이도 선택 · ${DIFFICULTY_LABELS[this.difficulty]}`, {
+      fontSize: '19px', color: '#f2d9a1', fontStyle: 'bold',
+    }).setOrigin(0.5));
+    const difficultyXs = [430, 640, 850];
+    DIFFICULTY_ORDER.forEach((difficulty, index) => {
+      const unlocked = this.isDifficultyUnlocked(difficulty);
+      const selected = difficulty === this.difficulty;
+      const button = this.add.rectangle(difficultyXs[index], 390, 185, 58,
+        selected ? 0x6f344f : unlocked ? 0x302837 : 0x1d1921, 1)
+        .setStrokeStyle(3, selected ? 0xf7c86a : unlocked ? 0x9c8ba8 : 0x514956, 1);
+      if (unlocked) {
+        button.setInteractive({ useHandCursor: true });
+        button.on('pointerdown', () => this.selectDifficulty(difficulty));
+      }
+      children.push(button);
+      children.push(this.add.text(difficultyXs[index], 380, unlocked ? DIFFICULTY_LABELS[difficulty] : `${DIFFICULTY_LABELS[difficulty]} · 잠김`, {
+        fontSize: '18px', color: selected ? '#fff2ce' : unlocked ? '#ddd0e3' : '#776d7b', fontStyle: 'bold',
+      }).setOrigin(0.5));
+      children.push(this.add.text(difficultyXs[index], 405, unlocked ? DIFFICULTY_DESCRIPTIONS[difficulty] : '이전 난이도 클리어 필요', {
+        fontSize: '12px', color: unlocked ? '#b9acbf' : '#665e6a',
+      }).setOrigin(0.5));
+    });
     const permanentLevelTotal = [...this.permanentUpgradeLevels.values()]
       .reduce((total, level) => total + level, 0);
-    children.push(this.add.text(GAME_WIDTH / 2, 430,
+    children.push(this.add.text(GAME_WIDTH / 2, 451,
       `저장된 영구 진행 · 재 ${this.ashes} · 화로 강화 ${permanentLevelTotal}단계`, {
-        fontSize: '18px', color: '#91e3bd', fontStyle: 'bold',
-        backgroundColor: '#16241fe6', padding: { x: 14, y: 8 },
+        fontSize: '16px', color: '#91e3bd', fontStyle: 'bold',
+        backgroundColor: '#16241fe6', padding: { x: 12, y: 6 },
       }).setOrigin(0.5));
     if (this.hasSavedProgress) {
-      const continueButton = this.add.rectangle(465, 505, 300, 72, 0x436b68, 1)
+      const continueButton = this.add.rectangle(465, 518, 300, 64, 0x436b68, 1)
         .setStrokeStyle(4, 0x91e3bd, 1).setInteractive({ useHandCursor: true });
       continueButton.on('pointerover', () => continueButton.setFillStyle(0x568781, 1));
       continueButton.on('pointerout', () => continueButton.setFillStyle(0x436b68, 1));
       continueButton.on('pointerdown', () => this.beginGame());
-      const newGameButton = this.add.rectangle(815, 505, 300, 72, 0x6f344f, 1)
+      const newGameButton = this.add.rectangle(815, 518, 300, 64, 0x6f344f, 1)
         .setStrokeStyle(4, 0xf7c86a, 1).setInteractive({ useHandCursor: true });
       newGameButton.on('pointerover', () => newGameButton.setFillStyle(0x8a405f, 1));
       newGameButton.on('pointerout', () => newGameButton.setFillStyle(0x6f344f, 1));
       newGameButton.on('pointerdown', () => this.beginNewGameFromStart());
       children.push(continueButton, newGameButton);
-      children.push(this.add.text(465, 505, '이어서 시작', {
+      children.push(this.add.text(465, 518, '이어서 시작', {
         fontSize: '26px', color: '#e8fff3', fontStyle: 'bold', padding: { x: 8, y: 6 },
       }).setOrigin(0.5));
-      children.push(this.add.text(815, 505, '새로 시작', {
+      children.push(this.add.text(815, 518, '새로 시작', {
         fontSize: '26px', color: '#fff2ce', fontStyle: 'bold', padding: { x: 8, y: 6 },
       }).setOrigin(0.5));
-      children.push(this.add.text(GAME_WIDTH / 2, 565, 'ENTER: 이어서 시작  ·  새로 시작: 재와 화로 강화 초기화', {
+      children.push(this.add.text(GAME_WIDTH / 2, 560, 'ENTER: 이어서 시작  ·  새로 시작: 재·강화·난이도 해금 초기화', {
         fontSize: '16px', color: '#a99ba9', padding: { x: 4, y: 3 },
       }).setOrigin(0.5));
     } else {
-      const startButton = this.add.rectangle(GAME_WIDTH / 2, 505, 330, 74, 0x6f344f, 1)
+      const startButton = this.add.rectangle(GAME_WIDTH / 2, 518, 330, 64, 0x6f344f, 1)
         .setStrokeStyle(4, 0xf7c86a, 1).setInteractive({ useHandCursor: true });
       startButton.on('pointerover', () => startButton.setFillStyle(0x8a405f, 1));
       startButton.on('pointerout', () => startButton.setFillStyle(0x6f344f, 1));
       startButton.on('pointerdown', () => this.beginGame());
       children.push(startButton);
-      children.push(this.add.text(GAME_WIDTH / 2, 505, '게임 시작', {
+      children.push(this.add.text(GAME_WIDTH / 2, 518, '게임 시작', {
         fontSize: '28px', color: '#fff2ce', fontStyle: 'bold', padding: { x: 8, y: 6 },
       }).setOrigin(0.5));
-      children.push(this.add.text(GAME_WIDTH / 2, 565, '버튼 클릭 또는 ENTER', {
+      children.push(this.add.text(GAME_WIDTH / 2, 560, '버튼 클릭 또는 ENTER', {
         fontSize: '16px', color: '#91869a', padding: { x: 4, y: 3 },
       }).setOrigin(0.5));
     }
-    const settingsButton = this.add.rectangle(GAME_WIDTH / 2, 625, 240, 48, 0x302837, 1)
+    const settingsButton = this.add.rectangle(GAME_WIDTH / 2, 620, 240, 48, 0x302837, 1)
       .setStrokeStyle(2, 0x9c8ba8, 1).setInteractive({ useHandCursor: true });
     settingsButton.on('pointerover', () => settingsButton.setFillStyle(0x44384d, 1));
     settingsButton.on('pointerout', () => settingsButton.setFillStyle(0x302837, 1));
     settingsButton.on('pointerdown', () => this.openSettings('start'));
     children.push(settingsButton);
-    children.push(this.add.text(GAME_WIDTH / 2, 625, '설정', {
+    children.push(this.add.text(GAME_WIDTH / 2, 620, '설정', {
       fontSize: '19px', color: '#ddd0e3', fontStyle: 'bold', padding: { x: 5, y: 4 },
     }).setOrigin(0.5));
     this.startOverlay = this.add.container(0, 0, children).setDepth(200);
     this.publishAccessibleStatus();
   }
 
+  private isDifficultyUnlocked(difficulty: Difficulty): boolean {
+    return DIFFICULTY_ORDER.indexOf(difficulty) <= DIFFICULTY_ORDER.indexOf(this.highestUnlockedDifficulty);
+  }
+
+  private selectDifficulty(difficulty: Difficulty): void {
+    if (!this.isDifficultyUnlocked(difficulty) || difficulty === this.difficulty) return;
+    this.difficulty = difficulty;
+    this.music.playEffect('select');
+    this.showStartScreen();
+  }
+
   private beginGame(): void {
-    if (this.gameStarted || this.countdownActive || this.settingsOverlay) return;
+    if (this.gameStarted || this.countdownActive || this.settingsOverlay || this.awaitingWeaponSelection) return;
     this.startOverlay?.destroy(true);
     this.startOverlay = undefined;
     this.music.start('exploration');
-    this.startRunCountdown(() => this.finishGameStart());
+    this.showWeaponSelection(() => this.startRunCountdown(() => this.finishGameStart()));
+  }
+
+  private showWeaponSelection(onSelected: () => void): void {
+    const debugWeapon = new URLSearchParams(window.location.search).get('debugWeapon') as WeaponType | null;
+    if (import.meta.env.DEV && debugWeapon && WEAPON_ORDER.includes(debugWeapon)) {
+      this.applyWeaponSelection(debugWeapon);
+      onSelected();
+      return;
+    }
+    this.awaitingWeaponSelection = true;
+    this.weaponSelectionCallback = onSelected;
+    const children: Phaser.GameObjects.GameObject[] = [];
+    children.push(this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x09070d, 0.97).setInteractive());
+    children.push(this.add.text(GAME_WIDTH / 2, 92, '무기를 선택하세요', {
+      fontSize: '42px', color: '#f7c86a', fontStyle: 'bold', stroke: '#3a1d2d', strokeThickness: 7,
+      padding: { x: 12, y: 12 },
+    }).setOrigin(0.5));
+    children.push(this.add.text(GAME_WIDTH / 2, 143, '선택한 무기는 이번 회차의 기본 공격 방식과 능력치를 결정합니다.', {
+      fontSize: '18px', color: '#cbbdce', padding: { x: 6, y: 6 },
+    }).setOrigin(0.5));
+    const cardXs = [350, 640, 930];
+    WEAPON_ORDER.forEach((weapon, index) => {
+      const definition = WEAPONS[weapon];
+      const card = this.add.rectangle(cardXs[index], 360, 250, 360, 0x211a2a, 0.98)
+        .setStrokeStyle(4, definition.color, 1).setInteractive({ useHandCursor: true });
+      card.on('pointerover', () => card.setFillStyle(0x31243a, 1));
+      card.on('pointerout', () => card.setFillStyle(0x211a2a, 0.98));
+      card.on('pointerdown', () => this.selectWeapon(weapon));
+      children.push(card);
+      children.push(this.add.text(cardXs[index], 225, `${index + 1}`, {
+        fontSize: '21px', color: '#fff3d4', backgroundColor: '#59405f', padding: { x: 10, y: 5 },
+      }).setOrigin(0.5));
+      children.push(this.add.text(cardXs[index], 285, definition.name, {
+        fontSize: '26px', color: '#f7ead3', fontStyle: 'bold', padding: { x: 8, y: 8 },
+      }).setOrigin(0.5));
+      children.push(this.add.text(cardXs[index], 330, definition.description, {
+        fontSize: '16px', color: '#c9becd', align: 'center', wordWrap: { width: 205 },
+        padding: { x: 6, y: 6 },
+      }).setOrigin(0.5));
+      children.push(this.add.text(cardXs[index], 415,
+        `공격력  ${definition.attackDamage}\n공격 간격  ${(definition.attackCooldown / 1000).toFixed(2)}초\n공격 범위  ${definition.attackRange}`, {
+          fontSize: '18px', color: '#fff0d2', align: 'left', lineSpacing: 10,
+          padding: { x: 8, y: 8 },
+        }).setOrigin(0.5));
+      const comparison = weapon === 'sword'
+        ? '균형형'
+        : weapon === 'spear'
+          ? '검과 동일한 공격력·공격속도'
+          : '검 대비 피해 약 1.3배 · 공격 간격 2배';
+      children.push(this.add.text(cardXs[index], 505, comparison, {
+        fontSize: '14px', color: '#91e3bd', align: 'center', wordWrap: { width: 210 },
+        padding: { x: 6, y: 6 },
+      }).setOrigin(0.5));
+    });
+    children.push(this.add.text(GAME_WIDTH / 2, 585, '클릭하거나 숫자 1 · 2 · 3을 누르세요', {
+      fontSize: '17px', color: '#a99caf', padding: { x: 6, y: 6 },
+    }).setOrigin(0.5));
+    this.weaponOverlay = this.add.container(0, 0, children).setDepth(205);
+    this.publishAccessibleStatus();
+  }
+
+  private selectWeapon(weapon: WeaponType): void {
+    if (!this.awaitingWeaponSelection) return;
+    this.music.playEffect('select');
+    this.applyWeaponSelection(weapon);
+    this.awaitingWeaponSelection = false;
+    this.weaponOverlay?.destroy(true);
+    this.weaponOverlay = undefined;
+    const onSelected = this.weaponSelectionCallback;
+    this.weaponSelectionCallback = undefined;
+    this.updateBuildText();
+    this.updateHud();
+    onSelected?.();
+  }
+
+  private applyWeaponSelection(weapon: WeaponType): void {
+    this.weapon = weapon;
+    this.resetTemporaryUpgrades();
+    this.hp = this.maxHp;
+    const definition = WEAPONS[weapon];
+    this.player?.setTexture(definition.walkTexture, 0)
+      .setDisplaySize(definition.displaySize, definition.displaySize)
+      .setCircle(definition.bodyRadius, definition.bodyOffset, definition.bodyOffset);
   }
 
   private beginNewGameFromStart(): void {
@@ -386,6 +616,8 @@ export class ArenaScene extends Phaser.Scene {
     this.hasSavedProgress = false;
     this.ashes = 0;
     this.permanentUpgradeLevels.clear();
+    this.highestUnlockedDifficulty = 'easy';
+    this.difficulty = 'easy';
     this.resetTemporaryUpgrades();
     this.hp = this.maxHp;
     this.updateBuildText();
@@ -452,7 +684,7 @@ export class ArenaScene extends Phaser.Scene {
       .setStrokeStyle(3, 0xbca5cb, 1).setInteractive({ useHandCursor: true });
     settingsButton.on('pointerdown', () => this.openSettings('pause'));
     children.push(settingsButton);
-    children.push(this.add.text(GAME_WIDTH / 2, 430, '음량 설정', {
+    children.push(this.add.text(GAME_WIDTH / 2, 430, '설정', {
       fontSize: '23px', color: '#f0e2f5', fontStyle: 'bold', padding: { x: 6, y: 5 },
     }).setOrigin(0.5));
     children.push(this.add.text(GAME_WIDTH / 2, 505, 'P 또는 ESC로 계속', {
@@ -490,7 +722,7 @@ export class ArenaScene extends Phaser.Scene {
     children.push(this.add.text(GAME_WIDTH / 2, 170, '설정', {
       fontSize: '44px', color: '#f7c86a', fontStyle: 'bold', padding: { x: 9, y: 7 },
     }).setOrigin(0.5));
-    const addVolumeRow = (label: string, y: number, key: keyof GameSettings): void => {
+    const addVolumeRow = (label: string, y: number, key: 'musicVolume' | 'effectsVolume'): void => {
       const value = this.settings[key];
       const trackLeft = 560;
       const trackWidth = 160;
@@ -513,23 +745,45 @@ export class ArenaScene extends Phaser.Scene {
         fontSize: '17px', color: '#bfe8e1', fontStyle: 'bold', padding: { x: 3, y: 2 },
       }).setOrigin(0.5));
     };
-    addVolumeRow('배경음악', 300, 'musicVolume');
-    addVolumeRow('효과음', 410, 'effectsVolume');
-    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 520, 300, 56, 0x436b68, 1)
+    addVolumeRow('배경음악', 250, 'musicVolume');
+    addVolumeRow('효과음', 350, 'effectsVolume');
+    children.push(this.add.text(455, 460, 'J 타겟', {
+      fontSize: '23px', color: '#e8dbe9', fontStyle: 'bold', padding: { x: 5, y: 4 },
+    }).setOrigin(1, 0.5));
+    const targetModeButton = this.add.rectangle(640, 460, 280, 52, this.settings.targetMode === 'auto' ? 0x436b68 : 0x49394f, 1)
+      .setStrokeStyle(2, this.settings.targetMode === 'auto' ? 0x91e3bd : 0xa893b1, 1)
+      .setInteractive({ useHandCursor: true });
+    targetModeButton.on('pointerdown', () => this.toggleTargetMode());
+    children.push(targetModeButton);
+    children.push(this.add.text(640, 460,
+      this.settings.targetMode === 'auto' ? '자동 · 가장 가까운 적' : '수동 · 마우스 방향', {
+        fontSize: '19px', color: this.settings.targetMode === 'auto' ? '#e8fff3' : '#f0e2f5', fontStyle: 'bold',
+      }).setOrigin(0.5));
+    children.push(this.add.text(640, 505, '마우스 공격은 설정과 관계없이 커서 방향을 사용합니다.', {
+      fontSize: '14px', color: '#a99caf',
+    }).setOrigin(0.5));
+    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 585, 300, 56, 0x436b68, 1)
       .setStrokeStyle(3, 0x91e3bd, 1).setInteractive({ useHandCursor: true });
     closeButton.on('pointerdown', () => this.closeSettings());
     children.push(closeButton);
-    children.push(this.add.text(GAME_WIDTH / 2, 520, '적용하고 돌아가기', {
+    children.push(this.add.text(GAME_WIDTH / 2, 585, '적용하고 돌아가기', {
       fontSize: '21px', color: '#e8fff3', fontStyle: 'bold', padding: { x: 5, y: 4 },
     }).setOrigin(0.5));
     this.settingsOverlay = this.add.container(0, 0, children).setDepth(240);
     this.publishAccessibleStatus();
   }
 
-  private adjustVolume(key: keyof GameSettings, delta: number): void {
+  private adjustVolume(key: 'musicVolume' | 'effectsVolume', delta: number): void {
     this.settings[key] = Math.round(Phaser.Math.Clamp(this.settings[key] + delta, 0, 1) * 100) / 100;
     this.music.setVolumes(this.settings.musicVolume, this.settings.effectsVolume);
     if (key === 'effectsVolume') this.music.playEffect('select');
+    this.persistProgress();
+    this.renderSettings();
+  }
+
+  private toggleTargetMode(): void {
+    this.settings.targetMode = this.settings.targetMode === 'auto' ? 'manual' : 'auto';
+    this.music.playEffect('select');
     this.persistProgress();
     this.renderSettings();
   }
@@ -539,6 +793,89 @@ export class ArenaScene extends Phaser.Scene {
     this.settingsOverlay = undefined;
     if (this.settingsReturnTo === 'start') this.startOverlay?.setVisible(true);
     else this.pauseOverlay?.setVisible(true);
+    this.publishAccessibleStatus();
+  }
+
+  private showPlayerStats(): void {
+    if (this.statsOverlay || this.gamePaused || !this.gameStarted || this.hp <= 0 || this.runFinished) return;
+    this.gamePaused = true;
+    this.physics.world.pause();
+    this.time.paused = true;
+    this.tweens.pauseAll();
+    this.anims.pauseAll();
+
+    const children: Phaser.GameObjects.GameObject[] = [];
+    children.push(this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x09070d, 0.9).setInteractive());
+    children.push(this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 820, 570, 0x17131f, 0.98)
+      .setStrokeStyle(3, 0x8d6ca8, 1));
+    children.push(this.add.text(GAME_WIDTH / 2, 105, '플레이어 상태', {
+      fontSize: '38px', color: '#f7c86a', fontStyle: 'bold', stroke: '#3a1d2d', strokeThickness: 6,
+      padding: { x: 8, y: 6 },
+    }).setOrigin(0.5));
+    children.push(this.add.text(GAME_WIDTH / 2, 155,
+      `${DIFFICULTY_LABELS[this.difficulty]}  ·  생명 ${this.hp} / ${this.maxHp}  ·  J 타겟 ${this.settings.targetMode === 'auto' ? '자동' : '수동'}`, {
+        fontSize: '18px', color: '#91e3bd', fontStyle: 'bold',
+      }).setOrigin(0.5));
+
+    const signed = (value: number, digits = 0): string => `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
+    const weaponBase = WEAPONS[this.weapon];
+    const leftStats = [
+      ['현재 무기', weaponBase.name, '회차 기본'],
+      ['공격력', `${this.attackDamage}`, signed(this.attackDamage - weaponBase.attackDamage)],
+      ['공격 간격', `${(this.attackCooldown / 1000).toFixed(2)}초`, `${((weaponBase.attackCooldown - this.attackCooldown) / 1000).toFixed(2)}초 감소`],
+      ['공격 범위', `${Math.round(this.attackRange)}`, signed(this.attackRange - weaponBase.attackRange)],
+      [this.weapon === 'spear' ? '직선 폭' : '부채꼴 각도', this.weapon === 'spear' ? '얇음' : `${Math.round(this.attackArcAngle * 2 * 180 / Math.PI)}°`, this.weapon === 'spear' ? '직선 판정' : signed((this.attackArcAngle - weaponBase.attackArcAngle) * 2 * 180 / Math.PI) + '°'],
+      ['치명타 확률', `${Math.round(this.criticalChance * 100)}%`, signed(this.criticalChance * 100) + '%'],
+    ];
+    const rightStats = [
+      ['최대 생명', `${this.maxHp}`, signed(this.maxHp - BASE_STATS.maxHp)],
+      ['이동속도', `${Math.round(this.moveSpeed)}`, signed(this.moveSpeed - BASE_STATS.moveSpeed)],
+      ['대시 대기시간', `${(this.dashCooldown / 1000).toFixed(2)}초`, `${((BASE_STATS.dashCooldown - this.dashCooldown) / 1000).toFixed(2)}초 감소`],
+      ['대시·무적 시간', `${(this.dashDuration / 1000).toFixed(2)}초`, signed((this.dashDuration - BASE_STATS.dashDuration) / 1000, 2) + '초'],
+      ['방 정리 회복', `${6 + this.roomRecovery}`, signed(this.roomRecovery)],
+      ['피해 감소', `${Math.round(this.damageReduction * 100)}%`, signed(this.damageReduction * 100) + '%'],
+    ];
+    const addStatColumn = (x: number, title: string, values: string[][]): void => {
+      children.push(this.add.text(x, 200, title, {
+        fontSize: '21px', color: '#d9b6ff', fontStyle: 'bold',
+      }).setOrigin(0.5));
+      values.forEach(([label, current, increase], index) => {
+        const y = 245 + index * 48;
+        children.push(this.add.rectangle(x, y, 330, 39, 0x241d2b, 0.96).setStrokeStyle(1, 0x51425e, 0.9));
+        children.push(this.add.text(x - 148, y, label, {
+          fontSize: '16px', color: '#c9bccd',
+        }).setOrigin(0, 0.5));
+        children.push(this.add.text(x + 30, y, current, {
+          fontSize: '17px', color: '#fff0d2', fontStyle: 'bold',
+        }).setOrigin(0.5));
+        children.push(this.add.text(x + 148, y, increase, {
+          fontSize: '14px', color: '#91e3bd',
+        }).setOrigin(1, 0.5));
+      });
+    };
+    addStatColumn(430, '공격 능력', leftStats);
+    addStatColumn(850, '생존·기동 능력', rightStats);
+
+    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 625, 260, 50, 0x51324a, 1)
+      .setStrokeStyle(2, 0xf1c46b, 1).setInteractive({ useHandCursor: true });
+    closeButton.on('pointerdown', () => this.closePlayerStats());
+    children.push(closeButton);
+    children.push(this.add.text(GAME_WIDTH / 2, 625, 'C / ESC · 돌아가기', {
+      fontSize: '18px', color: '#ffe5a5', fontStyle: 'bold',
+    }).setOrigin(0.5));
+    this.statsOverlay = this.add.container(0, 0, children).setDepth(235);
+    this.publishAccessibleStatus();
+  }
+
+  private closePlayerStats(): void {
+    if (!this.statsOverlay) return;
+    this.statsOverlay.destroy(true);
+    this.statsOverlay = undefined;
+    this.gamePaused = false;
+    this.time.paused = false;
+    this.physics.world.resume();
+    this.tweens.resumeAll();
+    this.anims.resumeAll();
     this.publishAccessibleStatus();
   }
 
@@ -552,6 +889,10 @@ export class ArenaScene extends Phaser.Scene {
     const requestedRoom = Number(debugParams.get('debugRoom'));
     const hasRequestedRoom = debugParams.has('debugRoom');
     const requestedRoomType = debugParams.get('debugRoomType') as RoomType | null;
+    const requestedDifficulty = debugParams.get('debugDifficulty') as Difficulty | null;
+    if (import.meta.env.DEV && !debugRunSeeded && requestedDifficulty && DIFFICULTY_ORDER.includes(requestedDifficulty)) {
+      this.difficulty = requestedDifficulty;
+    }
     const requestedTypeRoom = requestedRoomType ? this.rooms.findIndex((room) => room.type === requestedRoomType) : -1;
     const initialRoom = import.meta.env.DEV && !debugRunSeeded
       ? hasRequestedRoom && Number.isInteger(requestedRoom) && requestedRoom >= 0 && requestedRoom < this.rooms.length
@@ -621,7 +962,7 @@ export class ArenaScene extends Phaser.Scene {
     if (this.awaitingUpgrade || this.awaitingSpecial) {
       this.player.setVelocity(0);
       this.playerAttackingUntil = 0;
-      this.player.stop().setTexture('player', 0);
+      this.player.stop().setTexture(WEAPONS[this.weapon].walkTexture, 0);
       return;
     }
 
@@ -643,8 +984,8 @@ export class ArenaScene extends Phaser.Scene {
     if (time >= this.playerKnockbackUntil || dashStarted) this.player.setVelocity(direction.x * speed, direction.y * speed);
     const walking = direction.lengthSq() > 0 && time >= this.playerKnockbackUntil;
     const attacking = time < this.playerAttackingUntil;
-    if (!attacking && walking) this.player.play('player-walk', true);
-    else if (!attacking) this.player.stop().setTexture('player', 0);
+    if (!attacking && walking) this.player.play(WEAPONS[this.weapon].walkAnimation, true);
+    else if (!attacking) this.player.stop().setTexture(WEAPONS[this.weapon].walkTexture, 0);
     if (attacking) this.updateAttackVisualPosition();
 
     const pointer = this.input.activePointer;
@@ -655,8 +996,9 @@ export class ArenaScene extends Phaser.Scene {
     this.updateBossHud();
     this.removeOutOfBoundsProjectiles();
 
-    if ((pointer.isDown || this.attackKey.isDown) && time - this.lastAttackAt >= this.attackCooldown) {
-      this.attack();
+    const pointerAttacking = pointer.leftButtonDown();
+    if ((pointerAttacking || this.attackKey.isDown) && time - this.lastAttackAt >= this.attackCooldown) {
+      this.attack(pointerAttacking ? 'mouse' : 'keyboard');
     }
 
     if (this.enemies.countActive(true) === 0 && !this.roomCleared && !this.transitioning && this.rooms[this.roomIndex].type !== 'healing' && this.rooms[this.roomIndex].type !== 'shop') {
@@ -670,7 +1012,7 @@ export class ArenaScene extends Phaser.Scene {
 
   private startRoom(index: number, enteredFrom?: Direction): void {
     const room = this.rooms[index];
-    this.music.setMode(room.type === 'boss' ? 'boss' : 'exploration');
+    this.music.setMode(room.type === 'boss' || room.type === 'midboss' ? 'boss' : 'exploration');
     this.roomIndex = index;
     this.roomCleared = this.clearedRooms.has(index) || this.usedSpecialRooms.has(index);
     this.transitioning = false;
@@ -681,16 +1023,18 @@ export class ArenaScene extends Phaser.Scene {
     this.hideAllExits();
     this.positionPlayerAtEntrance(enteredFrom);
     this.drawArena(room.accent);
-    this.nextBossWallVolleyAt = room.type === 'boss' ? this.time.now + 1800 : Number.POSITIVE_INFINITY;
+    this.nextBossWallVolleyAt = this.roomUsesWallVolley(room) ? this.time.now + 1800 : Number.POSITIVE_INFINITY;
     this.bossWallVolleyFlipped = false;
     this.clearBossWallTelegraph();
+    this.clearMidBossTelegraph();
 
     this.visitedRooms.add(index);
     this.revealedRooms.add(index);
     const roomLabel: Record<RoomType, string> = {
-      combat: `방 ${index + 1}/${this.rooms.length}`, healing: '회복방', shop: '상점방', boss: '보스방',
+      combat: `방 ${index + 1}/${this.rooms.length}`, healing: '회복방', shop: '상점방',
+      midboss: '중간 보스방', boss: '보스방',
     };
-    this.roomText.setText(`${roomLabel[room.type]}  ·  ${room.name}`);
+    this.roomText.setText(`${DIFFICULTY_LABELS[this.difficulty]}  ·  ${roomLabel[room.type]}  ·  ${room.name}`);
 
     if (this.roomCleared && room.type !== 'boss') {
       this.bannerText.setText('정화된 방\n이동할 방향을 선택하세요').setAlpha(1);
@@ -729,9 +1073,9 @@ export class ArenaScene extends Phaser.Scene {
       [460, 580], [680, 570], [870, 565],
     ];
     kinds.forEach((kind, index) => {
-      const minimumDistance = kind === 'boss' ? 260 : MIN_ENEMY_SPAWN_DISTANCE;
+      const minimumDistance = kind === 'boss' || kind === 'midboss' ? 260 : MIN_ENEMY_SPAWN_DISTANCE;
       let position: [number, number];
-      if (kind === 'boss') {
+      if (kind === 'boss' || kind === 'midboss') {
         position = [850, GAME_HEIGHT / 2];
       } else {
         let positionIndex = availablePositions.findIndex(([candidateX, candidateY]) => (
@@ -749,12 +1093,15 @@ export class ArenaScene extends Phaser.Scene {
       }
       const [x, y] = position;
       const enemy = this.enemies.create(x, y, kind) as Enemy;
-      const displaySize: Record<EnemyKind, number> = { stalker: 62, brute: 81, archer: 66, boss: 113 };
+      const displaySize: Record<EnemyKind, number> = { stalker: 62, brute: 81, archer: 66, midboss: 98, boss: 113 };
       enemy.setDisplaySize(displaySize[kind], displaySize[kind]);
       enemy.kind = kind;
       enemy.attackPending = false;
       enemy.bossPhase = kind === 'boss' ? 1 : undefined;
       enemy.phaseInvulnerableUntil = 0;
+      enemy.cornerDashUntil = 0;
+      enemy.nextCornerDashAt = 0;
+      enemy.lockedAttackAngle = 0;
       enemy.lastHitAt = -1000;
       enemy.nextActionAt = this.time.now + 650 + index * 140;
       enemy.strafeDirection = index % 2 === 0 ? 1 : -1;
@@ -765,12 +1112,15 @@ export class ArenaScene extends Phaser.Scene {
         enemy.maxHp = 168; enemy.speed = 88; enemy.hitRadius = 25; enemy.setCircle(78, 50, 50);
       } else if (kind === 'archer') {
         enemy.maxHp = 68; enemy.speed = 88; enemy.hitRadius = 19; enemy.setCircle(73, 55, 55);
+      } else if (kind === 'midboss') {
+        enemy.maxHp = 800; enemy.speed = 205; enemy.hitRadius = 31; enemy.setCircle(78, 50, 50);
       } else {
-        enemy.maxHp = 2000; enemy.speed = 76; enemy.hitRadius = 35; enemy.setCircle(78, 50, 50);
+        enemy.maxHp = BOSS_HEALTH_BY_DIFFICULTY[this.difficulty]; enemy.speed = 76; enemy.hitRadius = 35; enemy.setCircle(78, 50, 50);
       }
       enemy.hp = enemy.maxHp;
-      enemy.setCollideWorldBounds(true).setBounce(0.15).setDepth(kind === 'boss' ? 5 : 4);
-      this.applyCharacterOutline(enemy, kind === 'boss' ? 0xff704f : 0x160f1c, kind === 'boss' ? 1.5 : 1.1);
+      const isMajorEnemy = kind === 'boss' || kind === 'midboss';
+      enemy.setCollideWorldBounds(true).setBounce(0.15).setDepth(isMajorEnemy ? 5 : 4);
+      this.applyCharacterOutline(enemy, kind === 'boss' ? 0xff704f : kind === 'midboss' ? 0xb783ff : 0x160f1c, isMajorEnemy ? 1.5 : 1.1);
     });
   }
 
@@ -792,16 +1142,31 @@ export class ArenaScene extends Phaser.Scene {
           enemy.nextActionAt = time + 1500;
           this.fireEnemyProjectile(enemy, angle, 10, 285);
         }
+      } else if (enemy.kind === 'midboss') {
+        if (enemy.attackPending) {
+          enemy.setVelocity(0);
+        } else if (distance > MIDBOSS_ATTACK_RANGE - 12) {
+          this.physics.velocityFromRotation(angle, enemy.speed, enemy.body!.velocity);
+        } else if (time >= enemy.nextActionAt) {
+          this.queueMidBossAttack(enemy, time, angle);
+        } else {
+          enemy.setVelocity(0);
+        }
       } else if (enemy.kind === 'boss') {
-        this.moveRangedEnemy(enemy, angle, distance, 285);
-        if (enemy.attackPending) this.bossWarningCircle.setPosition(enemy.x, enemy.y);
-        if (time >= enemy.nextActionAt && distance < 560 && !enemy.attackPending) this.queueBossAttack(enemy, time);
+        const escapingCorner = this.moveBossOutOfCorner(enemy, time);
+        if (!escapingCorner) {
+          this.moveRangedEnemy(enemy, angle, distance, 285);
+          if (enemy.attackPending) this.bossWarningCircle.setPosition(enemy.x, enemy.y);
+          if (time >= enemy.nextActionAt && distance < 560 && !enemy.attackPending) this.queueBossAttack(enemy, time);
+        }
       } else {
         this.physics.velocityFromRotation(angle, enemy.speed, enemy.body!.velocity);
       }
       const moving = enemy.body!.velocity.lengthSq() > 16;
-      if (moving) enemy.play(`${enemy.kind}-walk`, true);
-      else enemy.stop().setFrame(0);
+      if (enemy.kind === 'midboss' && enemy.attackPending) {
+        if (enemy.anims.currentAnim?.key !== 'midboss-attack') enemy.play('midboss-attack');
+      } else if (moving) enemy.play(`${enemy.kind}-walk`, true);
+      else enemy.stop().setTexture(enemy.kind).setFrame(0);
       enemy.setFlipX(this.player.x < enemy.x);
     });
   }
@@ -813,9 +1178,145 @@ export class ArenaScene extends Phaser.Scene {
     }) as Enemy | undefined;
   }
 
+  private getActiveMidBoss(): Enemy | undefined {
+    return this.enemies.getChildren().find((child) => {
+      const enemy = child as Enemy;
+      return enemy.active && enemy.kind === 'midboss';
+    }) as Enemy | undefined;
+  }
+
+  private queueMidBossAttack(midboss: Enemy, time: number, angle: number): void {
+    midboss.attackPending = true;
+    midboss.lockedAttackAngle = angle;
+    midboss.nextActionAt = time + MIDBOSS_ATTACK_WINDUP + MIDBOSS_ATTACK_COOLDOWN;
+    midboss.setVelocity(0).setTint(0xc89cff);
+    midboss.play('midboss-attack', true);
+    this.drawMidBossAttackArc(midboss, angle, 0x9f68e8, 0.24);
+    this.midBossWarningText
+      .setText('반월 참격 예고 · 대시로 회피하세요')
+      .setVisible(true)
+      .setAlpha(1);
+    this.tweens.killTweensOf(this.midBossTelegraphGraphics);
+    this.tweens.add({
+      targets: this.midBossTelegraphGraphics,
+      alpha: { from: 0.35, to: 1 },
+      duration: 150,
+      yoyo: true,
+      repeat: 2,
+    });
+
+    this.time.delayedCall(MIDBOSS_ATTACK_WINDUP, () => {
+      if (!midboss.active || !midboss.attackPending || this.hp <= 0 || this.runFinished
+        || this.rooms[this.roomIndex].type !== 'midboss') {
+        this.clearMidBossTelegraph();
+        return;
+      }
+      const lockedAngle = midboss.lockedAttackAngle ?? angle;
+      const playerDistance = Phaser.Math.Distance.Between(midboss.x, midboss.y, this.player.x, this.player.y);
+      const playerAngle = Phaser.Math.Angle.Between(midboss.x, midboss.y, this.player.x, this.player.y);
+      const angleDelta = Math.abs(Phaser.Math.Angle.Wrap(playerAngle - lockedAngle));
+      this.drawMidBossAttackArc(midboss, lockedAngle, 0xe8bdff, 0.62);
+      this.playMidBossSwingEffect(midboss, lockedAngle);
+      this.cameras.main.shake(120, 0.006);
+      if (playerDistance <= MIDBOSS_ATTACK_RANGE + 20 && angleDelta <= Math.PI / 2) this.damagePlayer(26);
+      midboss.attackPending = false;
+      midboss.clearTint();
+      midboss.setTexture('midboss', 0);
+      this.time.delayedCall(380, () => this.clearMidBossTelegraph());
+    });
+  }
+
+  private drawMidBossAttackArc(midboss: Enemy, angle: number, color: number, alpha: number): void {
+    this.midBossTelegraphGraphics.clear().setAlpha(1);
+    this.midBossTelegraphGraphics.fillStyle(color, alpha).lineStyle(4, color, 0.95);
+    this.midBossTelegraphGraphics.beginPath();
+    this.midBossTelegraphGraphics.moveTo(midboss.x, midboss.y);
+    this.midBossTelegraphGraphics.arc(
+      midboss.x,
+      midboss.y,
+      MIDBOSS_ATTACK_RANGE,
+      angle - Math.PI / 2,
+      angle + Math.PI / 2,
+      false,
+    );
+    this.midBossTelegraphGraphics.closePath().fillPath().strokePath();
+  }
+
+  private playMidBossSwingEffect(midboss: Enemy, angle: number): void {
+    this.midBossSwingTween?.stop();
+    this.tweens.killTweensOf(this.midBossSwingGraphics);
+    this.midBossSwingGraphics.clear().setPosition(midboss.x, midboss.y).setRotation(angle).setAlpha(1);
+    this.midBossSwingTween = this.tweens.addCounter({
+      from: -Math.PI / 2,
+      to: Math.PI / 2,
+      duration: 250,
+      ease: 'Cubic.easeOut',
+      onUpdate: (tween) => {
+        const sweepAngle = tween.getValue() ?? -Math.PI / 2;
+        const graphics = this.midBossSwingGraphics;
+        graphics.clear();
+        [0, 1, 2].forEach((trail) => {
+          graphics.lineStyle(12 - trail * 3, trail === 0 ? 0xf4d6ff : 0xb96cff, 0.92 - trail * 0.22);
+          graphics.beginPath();
+          graphics.arc(0, 0, MIDBOSS_ATTACK_RANGE - trail * 10, -Math.PI / 2, sweepAngle, false);
+          graphics.strokePath();
+        });
+        graphics.lineStyle(7, 0xffffff, 0.95);
+        graphics.lineBetween(
+          Math.cos(sweepAngle) * 54,
+          Math.sin(sweepAngle) * 54,
+          Math.cos(sweepAngle) * (MIDBOSS_ATTACK_RANGE + 14),
+          Math.sin(sweepAngle) * (MIDBOSS_ATTACK_RANGE + 14),
+        );
+      },
+      onComplete: () => {
+        this.tweens.add({
+          targets: this.midBossSwingGraphics,
+          alpha: 0,
+          duration: 120,
+          onComplete: () => this.midBossSwingGraphics.clear().setAlpha(1),
+        });
+      },
+    });
+  }
+
+  private clearMidBossTelegraph(): void {
+    if (!this.midBossTelegraphGraphics) return;
+    this.tweens.killTweensOf(this.midBossTelegraphGraphics);
+    this.midBossSwingTween?.stop();
+    this.midBossSwingTween = undefined;
+    this.tweens.killTweensOf(this.midBossSwingGraphics);
+    this.midBossTelegraphGraphics.clear().setAlpha(1);
+    this.midBossSwingGraphics?.clear().setAlpha(1).setPosition(0, 0).setRotation(0);
+    this.midBossWarningText?.setVisible(false).setText('').setAlpha(1);
+  }
+
+  private moveBossOutOfCorner(boss: Enemy, time: number): boolean {
+    if (time < (boss.cornerDashUntil ?? 0)) {
+      const centerAngle = Phaser.Math.Angle.Between(boss.x, boss.y, GAME_WIDTH / 2, GAME_HEIGHT / 2);
+      this.physics.velocityFromRotation(centerAngle, BOSS_CORNER_DASH_SPEED, boss.body!.velocity);
+      return true;
+    }
+
+    if (boss.attackPending || time < (boss.nextCornerDashAt ?? 0)) return false;
+    const nearHorizontalEdge = boss.x <= 182 || boss.x >= GAME_WIDTH - 182;
+    const nearVerticalEdge = boss.y <= 203 || boss.y >= GAME_HEIGHT - 203;
+    if (!nearHorizontalEdge || !nearVerticalEdge) return false;
+
+    boss.cornerDashUntil = time + BOSS_CORNER_DASH_DURATION;
+    boss.nextCornerDashAt = time + BOSS_CORNER_DASH_COOLDOWN;
+    boss.setTint(0xffd27a);
+    this.music.playEffect('dash');
+    this.time.delayedCall(BOSS_CORNER_DASH_DURATION, () => boss.active && boss.clearTint());
+    const centerAngle = Phaser.Math.Angle.Between(boss.x, boss.y, GAME_WIDTH / 2, GAME_HEIGHT / 2);
+    this.physics.velocityFromRotation(centerAngle, BOSS_CORNER_DASH_SPEED, boss.body!.velocity);
+    return true;
+  }
+
   private getBossPhase(boss: Enemy): 1 | 2 | 3 {
     const healthRatio = boss.hp / boss.maxHp;
     if (healthRatio > 0.65) return 1;
+    if (this.difficulty === 'easy') return 2;
     if (healthRatio > 0.3) return 2;
     return 3;
   }
@@ -915,7 +1416,21 @@ export class ArenaScene extends Phaser.Scene {
 
   private updateBossHud(): void {
     const boss = this.getActiveBoss();
+    const midboss = this.getActiveMidBoss();
     this.bossHudGraphics.clear();
+    if (midboss && this.rooms[this.roomIndex].type === 'midboss' && this.gameStarted) {
+      const ratio = Phaser.Math.Clamp(midboss.hp / midboss.maxHp, 0, 1);
+      const barX = 410;
+      const barY = 66;
+      const barWidth = 460;
+      this.bossHudGraphics.fillStyle(0x120b12, 0.96).fillRoundedRect(barX - 4, barY - 4, barWidth + 8, 22, 7);
+      this.bossHudGraphics.fillStyle(0x9f68e8, 1).fillRoundedRect(barX, barY, barWidth * ratio, 14, 5);
+      this.bossHealthText
+        .setText(`균열의 파수꾼  ${Math.max(0, Math.ceil(midboss.hp))} / ${midboss.maxHp}`)
+        .setColor('#e3c9ff')
+        .setVisible(true);
+      return;
+    }
     if (!boss || this.rooms[this.roomIndex].type !== 'boss' || !this.gameStarted) {
       this.bossHealthText.setVisible(false);
       return;
@@ -928,7 +1443,10 @@ export class ArenaScene extends Phaser.Scene {
     this.bossHudGraphics.fillStyle(0x120b12, 0.96).fillRoundedRect(barX - 4, barY - 4, barWidth + 8, 22, 7);
     this.bossHudGraphics.fillStyle(phase === 1 ? 0xcc4f62 : phase === 2 ? 0xe16b4f : 0xf29a3f, 1)
       .fillRoundedRect(barX, barY, barWidth * ratio, 14, 5);
-    this.bossHealthText.setText(`화로의 수문장  ${Math.max(0, Math.ceil(boss.hp))} / ${boss.maxHp}  ·  ${phase}단계`).setVisible(true);
+    this.bossHealthText
+      .setText(`화로의 수문장  ${Math.max(0, Math.ceil(boss.hp))} / ${boss.maxHp}  ·  ${phase}단계`)
+      .setColor('#ffd6d9')
+      .setVisible(true);
   }
 
   private clearBossTelegraph(): void {
@@ -978,15 +1496,18 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private updateBossWallVolley(time: number): void {
-    if (this.rooms[this.roomIndex].type !== 'boss' || this.pendingBossWallVolley || time < this.nextBossWallVolleyAt) return;
+    const room = this.rooms[this.roomIndex];
+    if (!this.roomUsesWallVolley(room) || this.roomCleared || this.pendingBossWallVolley || time < this.nextBossWallVolleyAt) return;
     const boss = this.getActiveBoss();
-    if (!boss || time < (boss.phaseInvulnerableUntil ?? 0)) return;
+    if (boss && time < (boss.phaseInvulnerableUntil ?? 0)) return;
+    if (this.enemies.countActive(true) === 0) return;
     this.pendingBossWallVolley = true;
     this.pendingBossWallVolleyFlipped = this.bossWallVolleyFlipped;
     this.nextBossWallVolleyAt = Number.POSITIVE_INFINITY;
     this.drawBossWallTelegraph(this.pendingBossWallVolleyFlipped);
     this.time.delayedCall(BOSS_WALL_TELEGRAPH_DURATION, () => {
-      if (!this.pendingBossWallVolley || this.rooms[this.roomIndex].type !== 'boss' || this.hp <= 0 || this.runFinished) {
+      if (!this.pendingBossWallVolley || !this.roomUsesWallVolley(this.rooms[this.roomIndex])
+        || this.roomCleared || this.hp <= 0 || this.runFinished) {
         this.clearBossWallTelegraph();
         return;
       }
@@ -995,6 +1516,12 @@ export class ArenaScene extends Phaser.Scene {
       this.nextBossWallVolleyAt = this.time.now + BOSS_WALL_VOLLEY_INTERVAL;
       this.clearBossWallTelegraph();
     });
+  }
+
+  private roomUsesWallVolley(room: RoomDefinition): boolean {
+    if (this.difficulty === 'easy') return false;
+    if (room.type === 'boss') return true;
+    return this.difficulty === 'hard' && (room.type === 'combat' || room.type === 'midboss');
   }
 
   private getBossWallVolleyGeometry(flipped: boolean): {
@@ -1009,9 +1536,12 @@ export class ArenaScene extends Phaser.Scene {
     const right = GAME_WIDTH - 52;
     const top = 73;
     const bottom = GAME_HEIGHT - 73;
+    const hardBossVolley = this.difficulty === 'hard' && this.rooms[this.roomIndex].type === 'boss';
+    const horizontalCount = hardBossVolley ? 3 : 2;
+    const verticalCount = hardBossVolley ? 5 : 3;
     return {
-      horizontalRows: Array.from({ length: 2 }, (_, index) => top + (bottom - top) * (index + 1) / 3),
-      verticalColumns: Array.from({ length: 3 }, (_, index) => left + (right - left) * (index + 1) / 4),
+      horizontalRows: Array.from({ length: horizontalCount }, (_, index) => top + (bottom - top) * (index + 1) / (horizontalCount + 1)),
+      verticalColumns: Array.from({ length: verticalCount }, (_, index) => left + (right - left) * (index + 1) / (verticalCount + 1)),
       horizontalX: flipped ? right : left,
       horizontalAngle: flipped ? Math.PI : 0,
       verticalY: flipped ? bottom : top,
@@ -1081,18 +1611,29 @@ export class ArenaScene extends Phaser.Scene {
     });
   }
 
-  private attack(): void {
+  private attack(source: 'mouse' | 'keyboard' = 'mouse'): void {
     const now = this.time.now;
     if (now - this.lastAttackAt < this.attackCooldown || this.hp <= 0 || this.transitioning || this.awaitingUpgrade || this.awaitingSpecial) return;
     this.lastAttackAt = now;
-    this.playerAttackingUntil = now + 250;
-    this.player.play('player-attack');
+    const weaponDefinition = WEAPONS[this.weapon];
+    this.playerAttackingUntil = now + Math.min(weaponDefinition.attackDuration, this.attackCooldown * 0.9);
+    this.player.play(weaponDefinition.attackAnimation);
     this.music.playEffect('attack');
     const pointer = this.input.activePointer;
-    const facing = Phaser.Math.Angle.Between(this.player.x, this.player.y, pointer.worldX, pointer.worldY);
+    const automaticTarget = source === 'keyboard' && this.settings.targetMode === 'auto'
+      ? this.getNearestEnemy()
+      : undefined;
+    const facing = automaticTarget
+      ? Phaser.Math.Angle.Between(this.player.x, this.player.y, automaticTarget.x, automaticTarget.y)
+      : Phaser.Math.Angle.Between(this.player.x, this.player.y, pointer.worldX, pointer.worldY);
+    if (automaticTarget) this.player.setFlipX(automaticTarget.x < this.player.x);
     this.currentAttackFacing = facing;
     const attackOrigin = this.getAttackOrigin(facing);
     this.showAttackVisual(facing);
+    let hitLanded = false;
+    let criticalLanded = false;
+    let enemyDefeated = false;
+    let heavyTargetHit = false;
     this.enemies.getChildren().forEach((child) => {
       const enemy = child as Enemy;
       if (!enemy.active || now - enemy.lastHitAt < 220) return;
@@ -1103,13 +1644,27 @@ export class ArenaScene extends Phaser.Scene {
       const angularAllowance = distance <= enemy.hitRadius
         ? Math.PI
         : Math.asin(Math.min(1, enemy.hitRadius / distance));
-      const touchesAttackRange = distance - enemy.hitRadius <= this.attackRange;
-      const touchesAttackAngle = delta <= this.attackArcAngle + angularAllowance;
+      let touchesAttackRange = distance - enemy.hitRadius <= this.attackRange;
+      let touchesAttackAngle = delta <= this.attackArcAngle + angularAllowance;
+      if (this.weapon === 'spear') {
+        const deltaX = enemy.x - attackOrigin.x;
+        const deltaY = enemy.y - attackOrigin.y;
+        const forwardDistance = deltaX * Math.cos(facing) + deltaY * Math.sin(facing);
+        const lateralDistance = Math.abs(-deltaX * Math.sin(facing) + deltaY * Math.cos(facing));
+        touchesAttackRange = forwardDistance + enemy.hitRadius >= 0
+          && forwardDistance - enemy.hitRadius <= this.attackRange;
+        touchesAttackAngle = lateralDistance <= 9 + enemy.hitRadius;
+      }
       if (touchesAttackRange && touchesAttackAngle) {
+        hitLanded = true;
         enemy.lastHitAt = now;
         const critical = Math.random() < this.criticalChance;
+        criticalLanded ||= critical;
+        heavyTargetHit ||= enemy.kind === 'brute' || enemy.kind === 'midboss' || enemy.kind === 'boss';
         const damage = critical ? this.attackDamage * 2 : this.attackDamage;
         enemy.hp -= damage;
+        this.spawnHitEffect(enemy, enemyAngle, critical);
+        if (SHOW_DAMAGE_NUMBERS) this.showDamageNumber(enemy.x, enemy.y, damage, critical);
         let phaseChanged = false;
         if (enemy.kind === 'boss') {
           const nextPhase = this.getBossPhase(enemy);
@@ -1120,19 +1675,23 @@ export class ArenaScene extends Phaser.Scene {
           this.updateBossHud();
         }
         if (!phaseChanged) this.flashEnemyHit(enemy, critical);
-        const force = enemy.kind === 'boss' ? 80 : enemy.kind === 'brute' ? 250 : 340;
+        const force = enemy.kind === 'boss' ? 80 : enemy.kind === 'midboss' ? 140 : enemy.kind === 'brute' ? 250 : 340;
         const knockback = new Phaser.Math.Vector2(enemy.x - this.player.x, enemy.y - this.player.y).normalize().scale(force);
         enemy.setVelocity(knockback.x, knockback.y);
         if (enemy.hp <= 0) {
+          enemyDefeated = true;
+          this.spawnDeathBurst(enemy);
           const deathEffect = {
             stalker: 'stalkerDeath',
             brute: 'bruteDeath',
             archer: 'archerDeath',
+            midboss: 'bruteDeath',
             boss: 'bossDeath',
           } as const;
           this.music.playEffect(deathEffect[enemy.kind]);
           if (enemy.kind === 'boss') this.clearBossTelegraph();
-          const ashReward: Record<EnemyKind, number> = { stalker: 1, brute: 3, archer: 2, boss: 33 };
+          if (enemy.kind === 'midboss') this.clearMidBossTelegraph();
+          const ashReward: Record<EnemyKind, number> = { stalker: 1, brute: 3, archer: 2, midboss: 12, boss: 33 };
           this.ashes += ashReward[enemy.kind];
           this.persistProgress();
           enemy.destroy();
@@ -1143,42 +1702,204 @@ export class ArenaScene extends Phaser.Scene {
         }
       }
     });
+    if (hitLanded) {
+      this.applyHitStop(criticalLanded ? 70 : enemyDefeated ? 60 : 40);
+      const shakeIntensity = criticalLanded ? 0.005 : heavyTargetHit ? 0.0036 : 0.0022;
+      this.cameras.main.shake(criticalLanded || enemyDefeated ? 95 : 60, shakeIntensity);
+    }
+  }
+
+  private getNearestEnemy(): Enemy | undefined {
+    let nearest: Enemy | undefined;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    this.enemies.getChildren().forEach((child) => {
+      const enemy = child as Enemy;
+      if (!enemy.active) return;
+      const distance = Phaser.Math.Distance.Squared(this.player.x, this.player.y, enemy.x, enemy.y);
+      if (distance < nearestDistance) {
+        nearest = enemy;
+        nearestDistance = distance;
+      }
+    });
+    return nearest;
   }
 
   private flashEnemyHit(enemy: Enemy, critical: boolean): void {
     this.tweens.killTweensOf(enemy);
-    enemy.setTint(critical ? 0xffd76b : 0xff8f8f).setAlpha(1);
+    const originalScaleX = enemy.scaleX;
+    const originalScaleY = enemy.scaleY;
+    enemy
+      .setTint(critical ? 0xffe07b : 0xff8f8f)
+      .setAlpha(1)
+      .setScale(originalScaleX * (critical ? 1.16 : 1.1), originalScaleY * (critical ? 0.82 : 0.9));
     this.tweens.add({
       targets: enemy,
-      alpha: 0.25,
-      duration: 45,
-      yoyo: true,
-      repeat: 1,
+      alpha: 0.32,
+      scaleX: originalScaleX,
+      scaleY: originalScaleY,
+      duration: critical ? 135 : 105,
+      ease: 'Back.Out',
       onComplete: () => {
-        if (enemy.active) enemy.setAlpha(1).clearTint();
+        if (enemy.active) enemy.setAlpha(1).setScale(originalScaleX, originalScaleY).clearTint();
       },
     });
   }
 
-  private showAttackVisual(facing: number, duration = 260): void {
+  private applyHitStop(duration: number): void {
+    if (this.hitStopTimer !== undefined) window.clearTimeout(this.hitStopTimer);
+    this.physics.world.pause();
+    this.time.paused = true;
+    this.tweens.pauseAll();
+    this.anims.pauseAll();
+    this.hitStopTimer = window.setTimeout(() => {
+      this.hitStopTimer = undefined;
+      if (this.gamePaused || !this.scene.isActive()) return;
+      this.time.paused = false;
+      this.physics.world.resume();
+      this.tweens.resumeAll();
+      this.anims.resumeAll();
+    }, duration);
+  }
+
+  private spawnHitEffect(enemy: Enemy, direction: number, critical: boolean): void {
+    const heavyTarget = enemy.kind === 'brute' || enemy.kind === 'midboss' || enemy.kind === 'boss';
+    const color = critical ? 0xffe079 : enemy.kind === 'midboss' ? 0xc89cff : heavyTarget ? 0xff9a63 : 0xffd7b0;
+    const count = critical ? 10 : heavyTarget ? 7 : 6;
+    const travel = critical ? 72 : heavyTarget ? 50 : 58;
+    for (let index = 0; index < count; index += 1) {
+      const spread = Phaser.Math.FloatBetween(-0.72, 0.72);
+      const angle = direction + spread;
+      const shard = this.add.rectangle(
+        enemy.x + Math.cos(angle) * 8,
+        enemy.y + Math.sin(angle) * 8,
+        Phaser.Math.Between(8, critical ? 20 : 15),
+        Phaser.Math.Between(2, 4),
+        color,
+        0.95,
+      ).setRotation(angle).setDepth(24);
+      const distance = Phaser.Math.Between(Math.round(travel * 0.55), travel);
+      this.tweens.add({
+        targets: shard,
+        x: shard.x + Math.cos(angle) * distance,
+        y: shard.y + Math.sin(angle) * distance,
+        alpha: 0,
+        scaleX: 0.25,
+        duration: Phaser.Math.Between(130, critical ? 260 : 210),
+        ease: 'Quad.Out',
+        onComplete: () => shard.destroy(),
+      });
+    }
+
+    const ring = this.add.circle(enemy.x, enemy.y, critical ? 18 : 13, color, 0)
+      .setStrokeStyle(critical ? 4 : 3, color, 0.9).setDepth(23);
+    this.tweens.add({
+      targets: ring,
+      scale: critical ? 2.4 : 1.9,
+      alpha: 0,
+      duration: critical ? 240 : 170,
+      ease: 'Quad.Out',
+      onComplete: () => ring.destroy(),
+    });
+  }
+
+  private spawnDeathBurst(enemy: Enemy): void {
+    const colorByKind: Record<EnemyKind, number> = {
+      stalker: 0xb54d62,
+      archer: 0x9ce9ff,
+      brute: 0xb99a7a,
+      midboss: 0xb783ff,
+      boss: 0xff6f47,
+    };
+    const fragmentCount = enemy.kind === 'boss' ? 22 : enemy.kind === 'midboss' ? 16 : enemy.kind === 'brute' ? 12 : 9;
+    const travel = enemy.kind === 'boss' ? 125 : enemy.kind === 'midboss' ? 100 : enemy.kind === 'brute' ? 82 : 72;
+    for (let index = 0; index < fragmentCount; index += 1) {
+      const angle = (Math.PI * 2 * index) / fragmentCount + Phaser.Math.FloatBetween(-0.24, 0.24);
+      const heavy = enemy.kind === 'brute' || enemy.kind === 'midboss' || enemy.kind === 'boss';
+      const fragment = this.add.rectangle(
+        enemy.x,
+        enemy.y,
+        Phaser.Math.Between(heavy ? 7 : 4, heavy ? 15 : 10),
+        Phaser.Math.Between(heavy ? 6 : 2, heavy ? 12 : 5),
+        colorByKind[enemy.kind],
+        1,
+      ).setRotation(angle).setDepth(25);
+      const distance = Phaser.Math.Between(Math.round(travel * 0.5), travel);
+      this.tweens.add({
+        targets: fragment,
+        x: fragment.x + Math.cos(angle) * distance,
+        y: fragment.y + Math.sin(angle) * distance + (heavy ? 24 : 12),
+        rotation: angle + Phaser.Math.FloatBetween(-2.4, 2.4),
+        alpha: 0,
+        scale: 0.25,
+        duration: Phaser.Math.Between(260, enemy.kind === 'boss' ? 560 : 420),
+        ease: 'Quad.Out',
+        onComplete: () => fragment.destroy(),
+      });
+    }
+  }
+
+  private showDamageNumber(x: number, y: number, damage: number, critical: boolean): void {
+    const damageText = this.add.text(x, y - 34, `${Math.round(damage)}${critical ? '!' : ''}`, {
+      fontSize: critical ? '25px' : '18px',
+      color: critical ? '#ffe079' : '#fff0dc',
+      fontStyle: 'bold',
+      stroke: '#321522',
+      strokeThickness: critical ? 5 : 4,
+      padding: { x: 4, y: 3 },
+    }).setOrigin(0.5).setDepth(30);
+    this.tweens.add({
+      targets: damageText,
+      y: y - (critical ? 88 : 72),
+      alpha: 0,
+      scale: critical ? 1.18 : 0.92,
+      duration: critical ? 620 : 480,
+      ease: 'Cubic.Out',
+      onComplete: () => damageText.destroy(),
+    });
+  }
+
+  private showAttackVisual(facing: number, duration?: number): void {
+    const weaponDefinition = WEAPONS[this.weapon];
+    const visualDuration = duration ?? weaponDefinition.attackDuration;
     const attackOrigin = this.getAttackOrigin(facing);
     this.drawAttackArc(facing);
+    this.tweens.killTweensOf(this.attackSlash);
+    if (this.weapon === 'spear') {
+      this.attackSlash
+        .setPosition(attackOrigin.x, attackOrigin.y)
+        .setDisplaySize(this.attackRange + 8, 5)
+        .setRotation(facing)
+        .setFillStyle(0xd8fbff, 1)
+        .setStrokeStyle(2, 0x70dbe8, 1)
+        .setAlpha(1)
+        .setVisible(true);
+      this.tweens.add({
+        targets: this.attackSlash,
+        alpha: 0,
+        duration: visualDuration,
+        ease: 'Cubic.Out',
+        onComplete: () => this.attackSlash.setVisible(false),
+      });
+      this.time.delayedCall(Math.round(visualDuration * 0.9), () => this.attackArc.setVisible(false).clear());
+      return;
+    }
     this.attackSlash
       .setPosition(attackOrigin.x, attackOrigin.y)
       .setDisplaySize(Math.max(50, this.attackRange - 12), 6)
       .setRotation(facing - this.attackArcAngle)
+      .setFillStyle(this.weapon === 'axe' ? 0xffc074 : 0xfff0b8, 0.95)
+      .setStrokeStyle(2, this.weapon === 'axe' ? 0xff6e3a : 0xff9f43, 1)
       .setAlpha(1)
       .setVisible(true);
-    this.tweens.killTweensOf(this.attackSlash);
     this.tweens.add({
       targets: this.attackSlash,
       rotation: facing + this.attackArcAngle,
       alpha: 0.18,
-      duration,
+      duration: visualDuration,
       ease: 'Sine.Out',
       onComplete: () => this.attackSlash.setVisible(false),
     });
-    this.time.delayedCall(Math.round(duration * 0.85), () => this.attackArc.setVisible(false).clear());
+    this.time.delayedCall(Math.round(visualDuration * 0.85), () => this.attackArc.setVisible(false).clear());
   }
 
   private updateAttackVisualPosition(): void {
@@ -1191,7 +1912,24 @@ export class ArenaScene extends Phaser.Scene {
     const innerRadius = 14;
     const attackOrigin = this.getAttackOrigin(facing);
     this.attackArc.clear().setPosition(attackOrigin.x, attackOrigin.y).setVisible(true);
-    this.attackArc.fillStyle(0xf7c86a, 0.2).lineStyle(3, 0xffd27a, 0.82);
+    if (this.weapon === 'spear') {
+      const halfWidth = 9;
+      const perpendicularX = -Math.sin(facing) * halfWidth;
+      const perpendicularY = Math.cos(facing) * halfWidth;
+      const endX = Math.cos(facing) * this.attackRange;
+      const endY = Math.sin(facing) * this.attackRange;
+      this.attackArc.fillStyle(0x8ee7f2, 0.18).lineStyle(3, 0xbef4ff, 0.88);
+      this.attackArc.beginPath();
+      this.attackArc.moveTo(perpendicularX, perpendicularY);
+      this.attackArc.lineTo(endX + perpendicularX, endY + perpendicularY);
+      this.attackArc.lineTo(endX - perpendicularX, endY - perpendicularY);
+      this.attackArc.lineTo(-perpendicularX, -perpendicularY);
+      this.attackArc.closePath().fillPath().strokePath();
+      return;
+    }
+    const fillColor = this.weapon === 'axe' ? 0xff7a45 : 0xf7c86a;
+    const strokeColor = this.weapon === 'axe' ? 0xffb067 : 0xffd27a;
+    this.attackArc.fillStyle(fillColor, this.weapon === 'axe' ? 0.25 : 0.2).lineStyle(3, strokeColor, 0.82);
     this.attackArc.beginPath();
     this.attackArc.arc(0, 0, this.attackRange, facing - this.attackArcAngle, facing + this.attackArcAngle, false);
     this.attackArc.lineTo(Math.cos(facing + this.attackArcAngle) * innerRadius, Math.sin(facing + this.attackArcAngle) * innerRadius);
@@ -1208,7 +1946,7 @@ export class ArenaScene extends Phaser.Scene {
 
   private onPlayerHit: Phaser.Types.Physics.Arcade.ArcadePhysicsCallback = (_player, enemyObject): void => {
     const enemy = enemyObject as unknown as Enemy;
-    const damage = enemy.kind === 'boss' ? 28 : enemy.kind === 'brute' ? 20 : 12;
+    const damage = enemy.kind === 'boss' ? 28 : enemy.kind === 'midboss' ? 22 : enemy.kind === 'brute' ? 20 : 12;
     this.damagePlayer(damage);
   };
 
@@ -1417,11 +2155,12 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private resetTemporaryUpgrades(): void {
+    const weaponDefinition = WEAPONS[this.weapon];
     this.maxHp = 50;
-    this.attackDamage = 34;
-    this.attackCooldown = ATTACK_COOLDOWN;
-    this.attackRange = 74;
-    this.attackArcAngle = 0.92;
+    this.attackDamage = weaponDefinition.attackDamage;
+    this.attackCooldown = weaponDefinition.attackCooldown;
+    this.attackRange = weaponDefinition.attackRange;
+    this.attackArcAngle = weaponDefinition.attackArcAngle;
     this.moveSpeed = 260;
     this.dashSpeed = 620;
     this.dashCooldown = 1000;
@@ -1456,6 +2195,7 @@ export class ArenaScene extends Phaser.Scene {
     this.transitioning = false;
     this.runFinished = false;
     this.awaitingUpgrade = false;
+    this.upgradeRerollMessage = '';
     this.awaitingSpecial = false;
     this.upgradeChoices = [];
     this.specialChoices = [];
@@ -1468,6 +2208,8 @@ export class ArenaScene extends Phaser.Scene {
     this.usedSpecialRooms = new Set<number>();
     this.visitedRooms = new Set<number>();
     this.revealedRooms = new Set<number>([0]);
+    this.rerolledUpgradeRooms = new Set<number>();
+    this.upgradeRerollMessage = '';
     this.rooms = createRandomRoomLayout();
     this.enemies.clear(true, true);
     this.enemyProjectiles.clear(true, true);
@@ -1479,13 +2221,15 @@ export class ArenaScene extends Phaser.Scene {
     this.drawArena(this.rooms[0].accent);
     this.updateBuildText();
     this.updateHud();
-    this.startRunCountdown(() => {
-      this.gameStarted = true;
-      this.player.setVisible(true);
-      this.invulnerableUntil = this.time.now + 1000;
-      this.startRoom(0);
-      this.updateBuildText();
-      this.updateHud();
+    this.showWeaponSelection(() => {
+      this.startRunCountdown(() => {
+        this.gameStarted = true;
+        this.player.setVisible(true);
+        this.invulnerableUntil = this.time.now + 1000;
+        this.startRoom(0);
+        this.updateBuildText();
+        this.updateHud();
+      });
     });
   }
 
@@ -1525,13 +2269,13 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private showUpgradeSelection(): void {
+    const openingNewReward = !this.awaitingUpgrade;
     this.awaitingUpgrade = true;
     this.player.setVelocity(0);
     this.bannerText.setVisible(false);
-    const eligible = UPGRADES.filter((upgrade) => (
-      (this.acquiredUpgrades.get(upgrade.id) ?? 0) < upgrade.maxStacks
-    ));
-    this.upgradeChoices = Phaser.Utils.Array.Shuffle([...eligible]).slice(0, 3);
+    if (openingNewReward) this.upgradeRerollMessage = '';
+    if (this.upgradeChoices.length === 0) this.upgradeChoices = this.rollUpgradeChoices();
+    this.upgradeOverlay?.destroy(true);
 
     const children: Phaser.GameObjects.GameObject[] = [];
     const backdrop = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x09070d, 0.84)
@@ -1578,8 +2322,55 @@ export class ArenaScene extends Phaser.Scene {
       }).setOrigin(0.5));
     });
 
+    const rerolled = this.rerolledUpgradeRooms.has(this.roomIndex);
+    const rerollButton = this.add.rectangle(GAME_WIDTH / 2, 565, 330, 50, rerolled ? 0x302b34 : 0x51405b, 1)
+      .setStrokeStyle(2, rerolled ? 0x625968 : 0xd0a4e8, 1);
+    if (!rerolled) {
+      rerollButton.setInteractive({ useHandCursor: true });
+      rerollButton.on('pointerover', () => rerollButton.setFillStyle(0x684e73, 1));
+      rerollButton.on('pointerout', () => rerollButton.setFillStyle(0x51405b, 1));
+      rerollButton.on('pointerdown', () => this.rerollUpgradeChoices());
+    }
+    children.push(rerollButton);
+    children.push(this.add.text(GAME_WIDTH / 2, 565,
+      rerolled ? '이 방의 재추첨을 사용했습니다' : `재 ${UPGRADE_REROLL_COST}로 재추첨  ·  R`, {
+        fontSize: '18px', color: rerolled ? '#887e8c' : '#f0d9ff', fontStyle: 'bold',
+      }).setOrigin(0.5));
+    if (this.upgradeRerollMessage) {
+      children.push(this.add.text(GAME_WIDTH / 2, 615, this.upgradeRerollMessage, {
+        fontSize: '16px', color: '#ffd08a', fontStyle: 'bold',
+      }).setOrigin(0.5));
+    }
+
     this.upgradeOverlay = this.add.container(0, 0, children).setDepth(100);
     this.publishAccessibleStatus();
+  }
+
+  private rollUpgradeChoices(excludedIds: UpgradeId[] = []): UpgradeDefinition[] {
+    const eligible = UPGRADES.filter((upgrade) => (
+      (this.acquiredUpgrades.get(upgrade.id) ?? 0) < upgrade.maxStacks
+    ));
+    const alternatives = Phaser.Utils.Array.Shuffle(eligible.filter((upgrade) => !excludedIds.includes(upgrade.id)));
+    const previous = Phaser.Utils.Array.Shuffle(eligible.filter((upgrade) => excludedIds.includes(upgrade.id)));
+    return [...alternatives, ...previous].slice(0, 3);
+  }
+
+  private rerollUpgradeChoices(): void {
+    if (!this.awaitingUpgrade || this.rerolledUpgradeRooms.has(this.roomIndex)) return;
+    if (this.ashes < UPGRADE_REROLL_COST) {
+      this.upgradeRerollMessage = `재가 ${UPGRADE_REROLL_COST - this.ashes} 부족합니다.`;
+      this.showUpgradeSelection();
+      return;
+    }
+    const previousIds = this.upgradeChoices.map((upgrade) => upgrade.id);
+    this.ashes -= UPGRADE_REROLL_COST;
+    this.rerolledUpgradeRooms.add(this.roomIndex);
+    this.upgradeChoices = this.rollUpgradeChoices(previousIds);
+    this.upgradeRerollMessage = `재 ${UPGRADE_REROLL_COST}를 사용해 축복을 다시 불러왔습니다.`;
+    this.music.playEffect('select');
+    this.persistProgress();
+    this.updateHud();
+    this.showUpgradeSelection();
   }
 
   private showSpecialRoom(type: 'healing' | 'shop'): void {
@@ -1783,6 +2574,7 @@ export class ArenaScene extends Phaser.Scene {
     this.music.playEffect('select');
     const nextLevel = this.grantUpgrade(upgrade);
     this.awaitingUpgrade = false;
+    this.upgradeRerollMessage = '';
     this.upgradeChoices = [];
     this.upgradeOverlay?.destroy(true);
     this.upgradeOverlay = undefined;
@@ -1806,7 +2598,7 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private applyUpgrade(id: UpgradeId): void {
-    if (id === 'attackPower') this.attackDamage += 5;
+    if (id === 'attackPower') this.attackDamage += 10;
     if (id === 'attackSpeed') this.attackCooldown = Math.max(170, Math.round(this.attackCooldown * 0.94));
     if (id === 'attackRange') {
       this.attackRange = Math.round(this.attackRange * 1.1);
@@ -1820,7 +2612,7 @@ export class ArenaScene extends Phaser.Scene {
     if (id === 'dashCooldown') this.dashCooldown = Math.max(200, this.dashCooldown - 200);
     if (id === 'dashDuration') this.dashDuration += 100;
     if (id === 'roomRecovery') this.roomRecovery += 4;
-    if (id === 'criticalChance') this.criticalChance = Math.min(0.5, this.criticalChance + 0.05);
+    if (id === 'criticalChance') this.criticalChance = Math.min(0.5, this.criticalChance + 0.1);
     if (id === 'ashArmor') this.damageReduction = Math.min(0.4, this.damageReduction + 0.04);
   }
 
@@ -1828,7 +2620,7 @@ export class ArenaScene extends Phaser.Scene {
     const entries = [...this.acquiredUpgrades.entries()];
     const permanentEntries = [...this.permanentUpgradeLevels.entries()];
     if (entries.length === 0 && permanentEntries.length === 0) {
-      this.buildText.setText('현재 강화\n없음');
+      this.buildText.setText(`현재 무기 · ${WEAPONS[this.weapon].name}\n현재 강화\n없음`);
       return;
     }
     const permanentVisible = permanentEntries.map(([id, level]) => {
@@ -1841,7 +2633,7 @@ export class ArenaScene extends Phaser.Scene {
       return `${definition?.name ?? id} Lv.${level}`;
     });
     const rest = entries.length > remainingSlots ? `외 ${entries.length - remainingSlots}종` : '';
-    this.buildText.setText(['현재 강화', ...permanentVisible, ...visible, rest].filter(Boolean).join('\n'));
+    this.buildText.setText([`현재 무기 · ${WEAPONS[this.weapon].name}`, '현재 강화', ...permanentVisible, ...visible, rest].filter(Boolean).join('\n'));
   }
 
   private showAvailableExits(announce: boolean): void {
@@ -1897,6 +2689,15 @@ export class ArenaScene extends Phaser.Scene {
     this.music.setMode('exploration');
     this.bannerText.setVisible(false);
     this.roomText.setText('화로의 수문장 처치 · 탈출 성공');
+    const clearedIndex = DIFFICULTY_ORDER.indexOf(this.difficulty);
+    const unlockedIndex = DIFFICULTY_ORDER.indexOf(this.highestUnlockedDifficulty);
+    if (clearedIndex >= unlockedIndex && clearedIndex < DIFFICULTY_ORDER.length - 1) {
+      this.newlyUnlockedDifficulty = DIFFICULTY_ORDER[clearedIndex + 1];
+      this.highestUnlockedDifficulty = this.newlyUnlockedDifficulty;
+    }
+    this.ashes = 0;
+    this.permanentUpgradeLevels.clear();
+    this.persistProgress();
     this.updateHud();
     this.showEndingCredits();
   }
@@ -1946,11 +2747,13 @@ export class ArenaScene extends Phaser.Scene {
       fontSize: '42px', color: '#f7c86a', fontStyle: 'bold',
       stroke: '#512239', strokeThickness: 6, padding: { x: 10, y: 8 },
     }).setOrigin(0.5).setDepth(depth + 3);
-    this.add.text(GAME_WIDTH / 2, 113, '수문장이 무너지고, 마침내 심연 밖으로 향하는 길이 열렸습니다.', {
+    this.add.text(GAME_WIDTH / 2, 113, this.newlyUnlockedDifficulty
+      ? `${DIFFICULTY_LABELS[this.newlyUnlockedDifficulty]} 해금 · 재와 화로 강화 초기화`
+      : '난이도 클리어 · 재와 화로 강화가 초기화되었습니다.', {
       fontSize: '19px', color: '#cdbbd2',
     }).setOrigin(0.5).setDepth(depth + 3);
     this.add.text(GAME_WIDTH / 2, 164,
-      `탈출 기록  ·  탐색 ${this.visitedRooms.size}/${this.rooms.length}  ·  처치 ${this.kills}  ·  보유 재 ${this.ashes}`, {
+      `${DIFFICULTY_LABELS[this.difficulty]} 클리어  ·  탐색 ${this.visitedRooms.size}/${this.rooms.length}  ·  처치 ${this.kills}  ·  보유 재 ${this.ashes}`, {
         fontSize: '18px', color: '#91e3bd', fontStyle: 'bold',
         backgroundColor: '#14251fe6', padding: { x: 18, y: 9 },
       }).setOrigin(0.5).setDepth(depth + 3);
@@ -2031,11 +2834,18 @@ export class ArenaScene extends Phaser.Scene {
       const revealed = this.revealedRooms.has(room.id);
       let color = 0x29242f;
       if (revealed) {
-        color = room.type === 'boss' ? 0xd95763 : room.type === 'healing' ? 0x4f8ed8 : room.type === 'shop' ? 0xe0ac3f : 0x766b82;
+        color = room.type === 'boss' ? 0xd95763
+          : room.type === 'midboss' ? 0xa56de2
+            : room.type === 'healing' ? 0x4f8ed8
+              : room.type === 'shop' ? 0xe0ac3f
+                : 0x766b82;
       }
       if (this.clearedRooms.has(room.id) && room.type === 'combat') color = 0x58a6a6;
       if (room.id === this.roomIndex) color = 0xf7c86a;
-      const radius = room.type === 'boss' && revealed ? 9 : room.type === 'healing' && revealed ? 8 : 7;
+      const radius = room.type === 'boss' && revealed ? 9
+        : room.type === 'midboss' && revealed ? 8
+          : room.type === 'healing' && revealed ? 8
+            : 7;
       this.miniMapGraphics.fillStyle(color, 1).fillCircle(x, y, radius);
       if (room.type === 'healing' && revealed) {
         this.miniMapGraphics.lineStyle(3, 0x9bd5ff, 1).strokeCircle(x, y, 11);
@@ -2068,8 +2878,14 @@ export class ArenaScene extends Phaser.Scene {
       };
     });
     const boss = this.getActiveBoss();
+    const midboss = this.getActiveMidBoss();
+    const wallGeometry = this.roomUsesWallVolley(this.rooms[this.roomIndex])
+      ? this.getBossWallVolleyGeometry(this.bossWallVolleyFlipped)
+      : null;
     status.textContent = JSON.stringify({
       gameStarted: this.gameStarted,
+      difficulty: this.difficulty,
+      highestUnlockedDifficulty: this.highestUnlockedDifficulty,
       countdownActive: this.countdownActive,
       countdown: this.countdownValue,
       musicMode: this.music.currentMode,
@@ -2087,14 +2903,28 @@ export class ArenaScene extends Phaser.Scene {
       bossMaxHp: boss?.maxHp ?? null,
       bossPhase: boss ? this.getBossPhase(boss) : null,
       bossInvulnerable: boss ? this.time.now < (boss.phaseInvulnerableUntil ?? 0) : false,
+      midbossHp: midboss ? Math.max(0, Math.ceil(midboss.hp)) : null,
+      midbossMaxHp: midboss?.maxHp ?? null,
+      midbossAnimation: midboss?.anims.currentAnim?.key ?? null,
+      midbossAttackRange: MIDBOSS_ATTACK_RANGE,
+      enemyKinds: activeEnemies.reduce<Partial<Record<EnemyKind, number>>>((counts, enemy) => {
+        counts[enemy.kind] = (counts[enemy.kind] ?? 0) + 1;
+        return counts;
+      }, {}),
       bossTelegraphActive: this.bossTelegraphActive,
+      midBossTelegraphActive: this.midBossWarningText?.visible ?? false,
       wallTelegraphActive: this.pendingBossWallVolley,
       wallFireballs: this.enemyProjectiles.getChildren().filter((child) => (
         (child as EnemyProjectile).active && (child as EnemyProjectile).source === 'wall'
       )).length,
+      wallVolleyShape: wallGeometry ? {
+        horizontal: wallGeometry.horizontalRows.length,
+        vertical: wallGeometry.verticalColumns.length,
+      } : null,
       ashes: this.ashes,
       paused: this.gamePaused,
       settingsOpen: Boolean(this.settingsOverlay),
+      statsOpen: Boolean(this.statsOverlay),
       volumes: this.settings,
       visitedRooms: this.visitedRooms.size,
       clearedRooms: this.clearedRooms.size,
@@ -2104,13 +2934,22 @@ export class ArenaScene extends Phaser.Scene {
       awaitingUpgrade: this.awaitingUpgrade,
       awaitingSpecial: this.awaitingSpecial,
       awaitingPermanentUpgrade: this.awaitingPermanentUpgrade,
+      awaitingWeaponSelection: this.awaitingWeaponSelection,
+      weaponChoices: this.awaitingWeaponSelection ? WEAPON_ORDER : [],
+      selectedWeapon: this.weapon,
       specialRoomUsed: this.usedSpecialRooms.has(this.roomIndex),
       specialChoices: this.specialChoices.map((choice) => ({ label: choice.label, cost: choice.cost })),
       offeredUpgrades: this.upgradeChoices.map((upgrade) => upgrade.id),
+      upgradeReroll: {
+        cost: UPGRADE_REROLL_COST,
+        usedInCurrentRoom: this.rerolledUpgradeRooms.has(this.roomIndex),
+        available: this.awaitingUpgrade && !this.rerolledUpgradeRooms.has(this.roomIndex),
+      },
       offeredPermanentUpgrades: this.permanentUpgradeChoices.map((upgrade) => upgrade.id),
       upgrades,
       permanentUpgrades,
       combatStats: {
+        weapon: this.weapon,
         attackDamage: this.attackDamage,
         attackCooldown: this.attackCooldown,
         attackRange: this.attackRange,
@@ -2128,7 +2967,7 @@ export class ArenaScene extends Phaser.Scene {
       runFinished: this.runFinished,
       restartAvailable: this.hp <= 0 || this.runFinished,
       hasSavedProgress: this.hasSavedProgress,
-      startChoices: !this.gameStarted && !this.countdownActive
+      startChoices: !this.gameStarted && !this.countdownActive && !this.awaitingWeaponSelection
         ? this.hasSavedProgress ? ['continue_saved_progress', 'new_game_reset_progress'] : ['start_game']
         : [],
       deathChoices: this.hp <= 0 && !this.awaitingPermanentUpgrade
@@ -2140,21 +2979,26 @@ export class ArenaScene extends Phaser.Scene {
   private resetRunState(): void {
     this.skipNextPersistence = false;
     this.rooms = createRandomRoomLayout();
+    this.weapon = 'sword';
     this.hp = 50; this.maxHp = 50; this.kills = 0; this.ashes = 0; this.roomIndex = 0;
-    this.attackDamage = 34; this.attackCooldown = ATTACK_COOLDOWN; this.attackRange = 74; this.attackArcAngle = 0.92;
+    this.attackDamage = WEAPONS.sword.attackDamage; this.attackCooldown = WEAPONS.sword.attackCooldown;
+    this.attackRange = WEAPONS.sword.attackRange; this.attackArcAngle = WEAPONS.sword.attackArcAngle;
     this.moveSpeed = 260; this.dashSpeed = 620; this.dashCooldown = 1000; this.dashDuration = 240;
     this.roomRecovery = 0; this.lastCombatRecovery = undefined; this.criticalChance = 0; this.damageReduction = 0;
     this.lastAttackAt = -1000; this.playerAttackingUntil = 0; this.currentAttackFacing = 0;
     this.lastDashAt = -2000; this.invulnerableUntil = 0; this.playerKnockbackUntil = 0;
     this.transitionLockUntil = 0; this.roomCleared = false; this.transitioning = false; this.runFinished = false; this.gameStarted = false;
     this.countdownActive = false; this.countdownValue = 0; this.gamePaused = false;
-    this.awaitingUpgrade = false; this.awaitingSpecial = false; this.awaitingPermanentUpgrade = false;
+    this.awaitingUpgrade = false; this.awaitingSpecial = false; this.awaitingPermanentUpgrade = false; this.awaitingWeaponSelection = false;
     this.acquiredUpgrades = new Map<UpgradeId, number>(); this.permanentUpgradeLevels = new Map<PermanentUpgradeId, number>();
-    this.upgradeChoices = []; this.permanentUpgradeChoices = [];
+    this.upgradeChoices = []; this.permanentUpgradeChoices = []; this.rerolledUpgradeRooms = new Set<number>(); this.upgradeRerollMessage = '';
     this.upgradeOverlay = undefined; this.specialOverlay = undefined; this.specialChoices = []; this.specialFeedbackText = undefined;
-    this.restartOverlay = undefined; this.permanentOverlay = undefined; this.permanentPurchaseMessage = '';
-    this.startOverlay = undefined; this.pauseOverlay = undefined; this.settingsOverlay = undefined; this.bossTelegraphActive = false;
+    this.restartOverlay = undefined; this.permanentOverlay = undefined; this.weaponOverlay = undefined;
+    this.weaponSelectionCallback = undefined; this.permanentPurchaseMessage = '';
+    this.startOverlay = undefined; this.pauseOverlay = undefined; this.settingsOverlay = undefined; this.statsOverlay = undefined;
+    this.bossTelegraphActive = false;
     this.pendingBossWallVolley = false; this.pendingBossWallVolleyFlipped = false;
+    this.difficulty = 'easy'; this.highestUnlockedDifficulty = 'easy'; this.newlyUnlockedDifficulty = undefined;
     this.debugInvincible = false;
     this.clearedRooms = new Set<number>();
     this.usedSpecialRooms = new Set<number>();
@@ -2168,6 +3012,8 @@ export class ArenaScene extends Phaser.Scene {
     const progress = loadRogueliteProgress();
     this.ashes = progress.ashes;
     this.settings = { ...progress.settings };
+    this.highestUnlockedDifficulty = progress.highestUnlockedDifficulty;
+    this.difficulty = this.highestUnlockedDifficulty;
     this.music.setVolumes(this.settings.musicVolume, this.settings.effectsVolume);
     this.permanentUpgradeLevels.clear();
     PERMANENT_UPGRADES.forEach((upgrade) => {
@@ -2189,6 +3035,7 @@ export class ArenaScene extends Phaser.Scene {
       version: 1,
       ashes: this.ashes,
       permanentUpgrades,
+      highestUnlockedDifficulty: this.highestUnlockedDifficulty,
       settings: { ...this.settings },
     });
   }
@@ -2213,7 +3060,7 @@ export class ArenaScene extends Phaser.Scene {
 
   private createAnimations(): void {
     const characterRates: Record<EnemyKind | 'player', number> = {
-      player: 10, stalker: 12, brute: 7, archer: 9, boss: 7,
+      player: 10, stalker: 12, brute: 7, archer: 9, midboss: 10, boss: 7,
     };
     Object.entries(characterRates).forEach(([key, frameRate]) => {
       const animationKey = `${key}-walk`;
@@ -2224,6 +3071,19 @@ export class ArenaScene extends Phaser.Scene {
         frameRate,
         repeat: -1,
       });
+    });
+    ([
+      ['player-spear-walk', 'playerSpear', 10],
+      ['player-axe-walk', 'playerAxe', 8],
+    ] as const).forEach(([key, texture, frameRate]) => {
+      if (!this.anims.exists(key)) {
+        this.anims.create({
+          key,
+          frames: this.anims.generateFrameNumbers(texture, { start: 0, end: 3 }),
+          frameRate,
+          repeat: -1,
+        });
+      }
     });
     if (!this.anims.exists('iceArrow-fly')) {
       this.anims.create({ key: 'iceArrow-fly', frames: this.anims.generateFrameNumbers('iceArrow', { start: 0, end: 3 }), frameRate: 14, repeat: -1 });
@@ -2236,6 +3096,27 @@ export class ArenaScene extends Phaser.Scene {
         key: 'player-attack',
         frames: this.anims.generateFrameNumbers('playerAttack', { start: 0, end: 3 }),
         frameRate: 16,
+        repeat: 0,
+      });
+    }
+    ([
+      ['player-spear-attack', 'playerSpearAttack', 16],
+      ['player-axe-attack', 'playerAxeAttack', 8],
+    ] as const).forEach(([key, texture, frameRate]) => {
+      if (!this.anims.exists(key)) {
+        this.anims.create({
+          key,
+          frames: this.anims.generateFrameNumbers(texture, { start: 0, end: 3 }),
+          frameRate,
+          repeat: 0,
+        });
+      }
+    });
+    if (!this.anims.exists('midboss-attack')) {
+      this.anims.create({
+        key: 'midboss-attack',
+        frames: this.anims.generateFrameNumbers('midbossAttack', { start: 0, end: 3 }),
+        frameRate: 5,
         repeat: 0,
       });
     }

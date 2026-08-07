@@ -1,8 +1,10 @@
 import type Phaser from 'phaser';
 
 export type Direction = 'up' | 'down' | 'left' | 'right';
-export type EnemyKind = 'stalker' | 'brute' | 'archer' | 'boss';
-export type RoomType = 'combat' | 'healing' | 'shop' | 'boss';
+export type Difficulty = 'easy' | 'normal' | 'hard';
+export type WeaponType = 'sword' | 'spear' | 'axe';
+export type EnemyKind = 'stalker' | 'brute' | 'archer' | 'midboss' | 'boss';
+export type RoomType = 'combat' | 'healing' | 'shop' | 'midboss' | 'boss';
 
 export type Enemy = Phaser.Physics.Arcade.Sprite & {
   hp: number;
@@ -16,6 +18,9 @@ export type Enemy = Phaser.Physics.Arcade.Sprite & {
   kind: EnemyKind;
   hitRadius: number;
   phaseInvulnerableUntil?: number;
+  cornerDashUntil?: number;
+  nextCornerDashAt?: number;
+  lockedAttackAngle?: number;
 };
 
 export type PermanentUpgradeId = Exclude<UpgradeId, 'dashCooldown' | 'dashDuration'>;
