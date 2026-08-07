@@ -2838,7 +2838,7 @@ export class ArenaScene extends Phaser.Scene {
     }
     if (id === 'moveSpeed') this.moveSpeed += 12.5;
     if (id === 'dashCooldown') this.dashCooldown = Math.max(100, this.dashCooldown - 200);
-    if (id === 'dashDuration') this.dashDuration += 100;
+    if (id === 'dashDuration') this.dashDuration += 200;
     if (id === 'roomRecovery') this.roomRecovery += 4;
     if (id === 'criticalChance') this.criticalChance = Math.min(0.5, this.criticalChance + 0.1);
     if (id === 'ashArmor') this.damageReduction = Math.min(0.4, this.damageReduction + 0.04);
