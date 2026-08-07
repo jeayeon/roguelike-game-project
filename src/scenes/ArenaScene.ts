@@ -110,7 +110,7 @@ const WEAPONS: Record<WeaponType, WeaponDefinition> = {
   },
   axe: {
     name: '심연의 도끼', description: '넓고 강하지만 느린 부채꼴 공격',
-    attackDamage: 50, attackCooldown: ATTACK_COOLDOWN * 2, attackRange: 111, attackArcAngle: 1.08,
+    attackDamage: 50, attackCooldown: ATTACK_COOLDOWN * 1.7, attackRange: 111, attackArcAngle: 1.08,
     attackDuration: 520, walkTexture: 'playerAxe', attackAnimation: 'player-axe-attack', walkAnimation: 'player-axe-walk',
     displaySize: 105, bodyRadius: 49, bodyOffset: 79, color: 0xff9a63,
   },
@@ -119,7 +119,7 @@ const BASE_STATS = {
   maxHp: 50,
   moveSpeed: 260,
   dashCooldown: 1000,
-  dashDuration: 240,
+  dashDuration: 400,
 } as const;
 
 //Scan을 상속
@@ -141,7 +141,7 @@ export class ArenaScene extends Phaser.Scene {
   private moveSpeed = 260;
   private dashSpeed = 620;
   private dashCooldown = 1000;
-  private dashDuration = 240;
+  private dashDuration = BASE_STATS.dashDuration;
   private roomRecovery = 0;
   private lastCombatRecovery?: { base: number; bonus: number; total: number; restored: number };
   private criticalChance = 0;
@@ -173,17 +173,21 @@ export class ArenaScene extends Phaser.Scene {
   private awaitingSpecial = false;
   private awaitingPermanentUpgrade = false;
   private awaitingWeaponSelection = false;
+  private awaitingMidBossReward = false;
   private acquiredUpgrades = new Map<UpgradeId, number>();
+  private midBossBonusUpgrades = new Map<UpgradeId, number>();
   private permanentUpgradeLevels = new Map<PermanentUpgradeId, number>();
   private permanentUpgradeChoices: PermanentUpgradeDefinition[] = [];
   private upgradeChoices: UpgradeDefinition[] = [];
   private rerolledUpgradeRooms = new Set<number>();
   private shopUpgradeChoicesByRoom = new Map<number, UpgradeId[]>();
   private upgradeRerollMessage = '';
+  private midBossRewardMessage = '';
   private upgradeOverlay?: Phaser.GameObjects.Container;
   private specialOverlay?: Phaser.GameObjects.Container;
   private specialChoices: SpecialChoice[] = [];
   private specialFeedbackText?: Phaser.GameObjects.Text;
+  private midBossRewardOverlay?: Phaser.GameObjects.Container;
   private restartOverlay?: Phaser.GameObjects.Container;
   private permanentOverlay?: Phaser.GameObjects.Container;
   private weaponOverlay?: Phaser.GameObjects.Container;
@@ -315,6 +319,10 @@ export class ArenaScene extends Phaser.Scene {
         this.closeSettings();
         return;
       }
+      if (this.awaitingMidBossReward) {
+        if (event.key === 'Enter' || event.key === 'Escape' || event.key === ' ') this.closeMidBossReward();
+        return;
+      }
       if (event.key.toLowerCase() === 'p' || (event.key === 'Escape' && this.gameStarted && !this.awaitingSpecial && !this.awaitingPermanentUpgrade)) {
         this.togglePause();
         return;
@@ -326,7 +334,7 @@ export class ArenaScene extends Phaser.Scene {
         if (choiceIndex >= 0 && choiceIndex < WEAPON_ORDER.length) this.selectWeapon(WEAPON_ORDER[choiceIndex]);
         return;
       }
-      if (event.key.toLowerCase() === 'c' && this.gameStarted && !this.awaitingUpgrade && !this.awaitingSpecial) {
+      if (event.key.toLowerCase() === 'c' && this.gameStarted && !this.awaitingUpgrade && !this.awaitingSpecial && !this.awaitingMidBossReward) {
         this.showPlayerStats();
         return;
       }
@@ -409,8 +417,8 @@ export class ArenaScene extends Phaser.Scene {
       stroke: '#3a1d2d', strokeThickness: 6,
     }).setOrigin(0.5).setDepth(22);
     this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 20,
-      '이동 WASD/방향키  ·  공격 마우스 클릭/J  ·  대시 SPACE  ·  상태창 C  ·  방 정리 후 방향문 선택', {
-        fontSize: '17px', color: '#b7abbf',
+      '이동 WASD/방향키  ·  공격 마우스 클릭/J  ·  대시 SPACE  ·  상태창 C  ·  일시정지 P/ESC  ·  방 정리 후 방향문 선택', {
+        fontSize: '16px', color: '#b7abbf',
       }).setOrigin(0.5, 1).setDepth(22);
     this.add.text(GAME_WIDTH - 35, 72, '탐색 지도', {
       fontSize: '15px', color: '#b7abbf', fontStyle: 'bold',
@@ -436,10 +444,10 @@ export class ArenaScene extends Phaser.Scene {
     children.push(this.add.text(GAME_WIDTH / 2, 155, '심연의 화로를 돌파하고 수문장을 쓰러뜨려 탈출하세요', {
       fontSize: '22px', color: '#d9c8dc', padding: { x: 6, y: 5 },
     }).setOrigin(0.5));
-    children.push(this.add.text(GAME_WIDTH / 2, 245,
-      '이동  WASD / 방향키\n공격  마우스 왼쪽 버튼 / J\n대시/무적  SPACE\n방을 정리하고 방향문을 선택해 보스를 찾으세요', {
-        fontSize: '20px', color: '#bcaec3', align: 'center', lineSpacing: 12,
-        backgroundColor: '#17131de6', padding: { x: 28, y: 15 },
+    children.push(this.add.text(GAME_WIDTH / 2, 240,
+      '이동  WASD / 방향키\n공격  마우스 왼쪽 버튼 / J\n대시/무적  SPACE\n상태창  C  ·  일시정지/메뉴  P 또는 ESC\n방을 정리하고 방향문을 선택해 보스를 찾으세요', {
+        fontSize: '19px', color: '#bcaec3', align: 'center', lineSpacing: 8,
+        backgroundColor: '#17131de6', padding: { x: 28, y: 13 },
       }).setOrigin(0.5));
     children.push(this.add.text(GAME_WIDTH / 2, 345, `난이도 선택 · ${DIFFICULTY_LABELS[this.difficulty]}`, {
       fontSize: '19px', color: '#f2d9a1', fontStyle: 'bold',
@@ -583,7 +591,7 @@ export class ArenaScene extends Phaser.Scene {
         ? '균형형'
         : weapon === 'spear'
           ? '검 대비 피해 약 1.3배 · 동일한 공격 속도'
-          : '검 대비 피해 약 1.5배 · 공격 간격 2배';
+          : '검 대비 피해 약 1.5배 · 공격 간격 1.7배';
       children.push(this.add.text(cardXs[index], 505, comparison, {
         fontSize: '14px', color: '#91e3bd', align: 'center', wordWrap: { width: 210 },
         padding: { x: 6, y: 6 },
@@ -969,7 +977,7 @@ export class ArenaScene extends Phaser.Scene {
 
   update(time: number): void {
     if (!this.gameStarted || this.gamePaused || this.hp <= 0 || this.runFinished) return;
-    if (this.awaitingUpgrade || this.awaitingSpecial) {
+    if (this.awaitingUpgrade || this.awaitingSpecial || this.awaitingMidBossReward) {
       this.player.setVelocity(0);
       this.playerAttackingUntil = 0;
       this.player.stop().setTexture(WEAPONS[this.weapon].walkTexture, 0);
@@ -2238,12 +2246,14 @@ export class ArenaScene extends Phaser.Scene {
     this.moveSpeed = 260;
     this.dashSpeed = 620;
     this.dashCooldown = 1000;
-    this.dashDuration = 240;
+    this.dashDuration = BASE_STATS.dashDuration;
     this.roomRecovery = 0;
     this.lastCombatRecovery = undefined;
     this.criticalChance = 0;
     this.damageReduction = 0;
     this.acquiredUpgrades.clear();
+    this.midBossBonusUpgrades.clear();
+    this.midBossRewardMessage = '';
     this.permanentUpgradeLevels.forEach((level, id) => {
       for (let stack = 0; stack < level; stack += 1) this.applyPermanentUpgrade(id);
     });
@@ -2269,13 +2279,16 @@ export class ArenaScene extends Phaser.Scene {
     this.transitioning = false;
     this.runFinished = false;
     this.awaitingUpgrade = false;
+    this.awaitingMidBossReward = false;
     this.upgradeRerollMessage = '';
     this.awaitingSpecial = false;
     this.upgradeChoices = [];
     this.specialChoices = [];
     this.upgradeOverlay?.destroy(true);
+    this.midBossRewardOverlay?.destroy(true);
     this.specialOverlay?.destroy(true);
     this.upgradeOverlay = undefined;
+    this.midBossRewardOverlay = undefined;
     this.specialOverlay = undefined;
     this.specialFeedbackText = undefined;
     this.clearedRooms = new Set<number>();
@@ -2332,6 +2345,8 @@ export class ArenaScene extends Phaser.Scene {
     } else {
       this.lastCombatRecovery = undefined;
     }
+    const midBossReward = room.type === 'midboss' ? this.grantMidBossBonusUpgrade() : undefined;
+    if (!midBossReward) this.midBossRewardMessage = '';
     this.updateHud();
     if (room.type === 'boss') {
       this.transitioning = true;
@@ -2340,6 +2355,64 @@ export class ArenaScene extends Phaser.Scene {
       this.time.delayedCall(850, () => this.finishRun());
       return;
     }
+    if (midBossReward) {
+      this.showMidBossReward(midBossReward);
+      return;
+    }
+    this.showUpgradeSelection();
+  }
+
+  private showMidBossReward(upgrade: UpgradeDefinition): void {
+    this.awaitingMidBossReward = true;
+    this.player.setVelocity(0);
+    this.bannerText.setVisible(false);
+    this.midBossRewardOverlay?.destroy(true);
+    const children: Phaser.GameObjects.GameObject[] = [];
+    children.push(this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x09070d, 0.88).setInteractive());
+    children.push(this.add.text(GAME_WIDTH / 2, 115, '중간보스 격파 보상', {
+      fontSize: '38px', color: '#d8b5ff', fontStyle: 'bold', stroke: '#28143a', strokeThickness: 7,
+      padding: { x: 10, y: 9 },
+    }).setOrigin(0.5));
+    children.push(this.add.text(GAME_WIDTH / 2, 165, '이번 회차에만 유지되는 추가 강화입니다', {
+      fontSize: '18px', color: '#bcaec3', padding: { x: 5, y: 4 },
+    }).setOrigin(0.5));
+
+    const card = this.add.rectangle(GAME_WIDTH / 2, 355, 390, 320, 0x211a2a, 0.99)
+      .setStrokeStyle(5, upgrade.color, 1);
+    children.push(card);
+    children.push(this.add.text(GAME_WIDTH / 2, 260, upgrade.name, {
+      fontSize: '29px', color: '#f7ead3', fontStyle: 'bold', padding: { x: 8, y: 8 },
+    }).setOrigin(0.5));
+    children.push(this.add.text(GAME_WIDTH / 2, 345, upgrade.description, {
+      fontSize: '19px', color: '#cfc0d4', align: 'center', wordWrap: { width: 320 }, lineSpacing: 6,
+      padding: { x: 6, y: 6 },
+    }).setOrigin(0.5));
+    children.push(this.add.text(GAME_WIDTH / 2, 435,
+      `중간보스 보너스 +1\n현재 ${this.formatTemporaryUpgradeLevel(upgrade.id)}`, {
+        fontSize: '20px', color: '#d8b5ff', fontStyle: 'bold', align: 'center', lineSpacing: 8,
+        padding: { x: 6, y: 6 },
+      }).setOrigin(0.5));
+
+    const closeButton = this.add.rectangle(GAME_WIDTH / 2, 565, 350, 58, 0x5c3f70, 1)
+      .setStrokeStyle(3, 0xd8b5ff, 1).setInteractive({ useHandCursor: true });
+    closeButton.on('pointerover', () => closeButton.setFillStyle(0x76528e, 1));
+    closeButton.on('pointerout', () => closeButton.setFillStyle(0x5c3f70, 1));
+    closeButton.on('pointerdown', () => this.closeMidBossReward());
+    children.push(closeButton);
+    children.push(this.add.text(GAME_WIDTH / 2, 565, '확인하고 계속하기  ·  ENTER', {
+      fontSize: '21px', color: '#f5eaff', fontStyle: 'bold', padding: { x: 6, y: 5 },
+    }).setOrigin(0.5));
+    this.midBossRewardOverlay = this.add.container(0, 0, children).setDepth(110);
+    this.publishAccessibleStatus();
+  }
+
+  private closeMidBossReward(): void {
+    if (!this.awaitingMidBossReward) return;
+    this.awaitingMidBossReward = false;
+    this.midBossRewardOverlay?.destroy(true);
+    this.midBossRewardOverlay = undefined;
+    this.midBossRewardMessage = '';
+    this.music.playEffect('select');
     this.showUpgradeSelection();
   }
 
@@ -2366,13 +2439,21 @@ export class ArenaScene extends Phaser.Scene {
           fontSize: '16px', color: '#91e3bd', fontStyle: 'bold', padding: { x: 5, y: 4 },
         }).setOrigin(0.5));
     }
+    if (this.midBossRewardMessage) {
+      children.push(this.add.text(GAME_WIDTH / 2, 153, this.midBossRewardMessage, {
+        fontSize: '17px', color: '#d8b5ff', fontStyle: 'bold', padding: { x: 6, y: 5 },
+      }).setOrigin(0.5));
+    }
     children.push(this.add.text(GAME_WIDTH / 2, 185, '클릭하거나 숫자 1 · 2 · 3을 누르세요', {
       fontSize: '17px', color: '#b9adbF',
     }).setOrigin(0.5));
 
     const cardXs = [350, 640, 930];
     this.upgradeChoices.forEach((upgrade, index) => {
-      const currentLevel = this.acquiredUpgrades.get(upgrade.id) ?? 0;
+      const currentLevel = this.getRegularUpgradeLevel(upgrade.id);
+      const bonusLevel = this.midBossBonusUpgrades.get(upgrade.id) ?? 0;
+      const currentLevelText = bonusLevel > 0 ? `${currentLevel}+${bonusLevel}` : `${currentLevel}`;
+      const nextLevelText = bonusLevel > 0 ? `${currentLevel + 1}+${bonusLevel}` : `${currentLevel + 1}`;
       const card = this.add.rectangle(cardXs[index], 365, 250, 300, 0x211a2a, 0.98)
         .setStrokeStyle(4, upgrade.color, 1)
         .setInteractive({ useHandCursor: true });
@@ -2392,7 +2473,7 @@ export class ArenaScene extends Phaser.Scene {
         fontSize: '17px', color: '#c9becd', align: 'center',
         wordWrap: { width: 190 }, lineSpacing: 6,
       }).setOrigin(0.5));
-      children.push(this.add.text(cardXs[index], 475, `현재 Lv.${currentLevel}  →  Lv.${currentLevel + 1}`, {
+      children.push(this.add.text(cardXs[index], 475, `현재 Lv.${currentLevelText}  →  Lv.${nextLevelText}`, {
         fontSize: '15px', color: '#a99caf',
       }).setOrigin(0.5));
     });
@@ -2423,7 +2504,7 @@ export class ArenaScene extends Phaser.Scene {
 
   private rollUpgradeChoices(excludedIds: UpgradeId[] = []): UpgradeDefinition[] {
     const eligible = UPGRADES.filter((upgrade) => (
-      (this.acquiredUpgrades.get(upgrade.id) ?? 0) < upgrade.maxStacks
+      this.getRegularUpgradeLevel(upgrade.id) < upgrade.maxStacks
     ));
     const alternatives = Phaser.Utils.Array.Shuffle(eligible.filter((upgrade) => !excludedIds.includes(upgrade.id)));
     const previous = Phaser.Utils.Array.Shuffle(eligible.filter((upgrade) => excludedIds.includes(upgrade.id)));
@@ -2476,7 +2557,7 @@ export class ArenaScene extends Phaser.Scene {
       ];
     } else {
       const shopEligible = UPGRADES.filter((upgrade) => (
-        (this.acquiredUpgrades.get(upgrade.id) ?? 0) < upgrade.maxStacks
+        this.getRegularUpgradeLevel(upgrade.id) < upgrade.maxStacks
       ));
       const savedIds = excludedShopUpgradeIds.length === 0
         ? this.shopUpgradeChoicesByRoom.get(this.roomIndex) ?? []
@@ -2503,7 +2584,7 @@ export class ArenaScene extends Phaser.Scene {
         ...eligible.map((shopUpgrade) => ({
           label: shopUpgrade.name,
           cost: 28,
-          description: `${shopUpgrade.description}\n즉시 Lv.${(this.acquiredUpgrades.get(shopUpgrade.id) ?? 0) + 1} 획득`,
+          description: `${shopUpgrade.description}\n즉시 ${this.formatTemporaryUpgradeLevel(shopUpgrade.id, this.getRegularUpgradeLevel(shopUpgrade.id) + 1)} 획득`,
           action: () => {
             const level = this.grantUpgrade(shopUpgrade);
             return `${shopUpgrade.name} Lv.${level} 획득`;
@@ -2723,6 +2804,27 @@ export class ArenaScene extends Phaser.Scene {
     return nextLevel;
   }
 
+  private grantMidBossBonusUpgrade(): UpgradeDefinition {
+    const upgrade = Phaser.Utils.Array.GetRandom(UPGRADES);
+    const bonusLevel = (this.midBossBonusUpgrades.get(upgrade.id) ?? 0) + 1;
+    const totalLevel = (this.acquiredUpgrades.get(upgrade.id) ?? 0) + 1;
+    this.midBossBonusUpgrades.set(upgrade.id, bonusLevel);
+    this.acquiredUpgrades.set(upgrade.id, totalLevel);
+    this.applyUpgrade(upgrade.id);
+    this.midBossRewardMessage = `중간보스 격파 보너스 · ${upgrade.name} +1 (${this.formatTemporaryUpgradeLevel(upgrade.id)})`;
+    this.updateBuildText();
+    return upgrade;
+  }
+
+  private getRegularUpgradeLevel(id: UpgradeId): number {
+    return Math.max(0, (this.acquiredUpgrades.get(id) ?? 0) - (this.midBossBonusUpgrades.get(id) ?? 0));
+  }
+
+  private formatTemporaryUpgradeLevel(id: UpgradeId, regularLevel = this.getRegularUpgradeLevel(id)): string {
+    const bonusLevel = this.midBossBonusUpgrades.get(id) ?? 0;
+    return bonusLevel > 0 ? `Lv.${regularLevel}+${bonusLevel}` : `Lv.${regularLevel}`;
+  }
+
   private applyUpgrade(id: UpgradeId): void {
     if (id === 'attackPower') this.attackDamage += 10;
     if (id === 'attackSpeed') this.attackCooldown = Math.max(170, Math.round(this.attackCooldown * 0.94));
@@ -2735,7 +2837,7 @@ export class ArenaScene extends Phaser.Scene {
       this.hp = Math.min(this.maxHp, this.hp + 5);
     }
     if (id === 'moveSpeed') this.moveSpeed += 12.5;
-    if (id === 'dashCooldown') this.dashCooldown = Math.max(200, this.dashCooldown - 200);
+    if (id === 'dashCooldown') this.dashCooldown = Math.max(100, this.dashCooldown - 200);
     if (id === 'dashDuration') this.dashDuration += 100;
     if (id === 'roomRecovery') this.roomRecovery += 4;
     if (id === 'criticalChance') this.criticalChance = Math.min(0.5, this.criticalChance + 0.1);
@@ -2754,9 +2856,9 @@ export class ArenaScene extends Phaser.Scene {
       return `영구 · ${definition?.name ?? id} Lv.${level}`;
     });
     const remainingSlots = Math.max(0, 6 - permanentVisible.length);
-    const visible = entries.slice(0, remainingSlots).map(([id, level]) => {
+    const visible = entries.slice(0, remainingSlots).map(([id]) => {
       const definition = UPGRADES.find((upgrade) => upgrade.id === id);
-      return `${definition?.name ?? id} Lv.${level}`;
+      return `${definition?.name ?? id} ${this.formatTemporaryUpgradeLevel(id)}`;
     });
     const rest = entries.length > remainingSlots ? `외 ${entries.length - remainingSlots}종` : '';
     this.buildText.setText([`현재 무기 · ${WEAPONS[this.weapon].name}`, '현재 강화', ...permanentVisible, ...visible, rest].filter(Boolean).join('\n'));
@@ -2993,7 +3095,12 @@ export class ArenaScene extends Phaser.Scene {
     const enemiesOutOfBounds = activeEnemies.filter((enemy) => (
       enemy.x < 42 || enemy.x > GAME_WIDTH - 42 || enemy.y < 63 || enemy.y > GAME_HEIGHT - 63
     )).length;
-    const upgrades = [...this.acquiredUpgrades.entries()].map(([id, level]) => ({ id, level }));
+    const upgrades = [...this.acquiredUpgrades.entries()].map(([id, level]) => ({
+      id,
+      level,
+      regularLevel: this.getRegularUpgradeLevel(id),
+      midBossBonusLevel: this.midBossBonusUpgrades.get(id) ?? 0,
+    }));
     const permanentUpgrades = PERMANENT_UPGRADES.map((upgrade) => {
       const level = this.permanentUpgradeLevels.get(upgrade.id) ?? 0;
       return {
@@ -3059,6 +3166,7 @@ export class ArenaScene extends Phaser.Scene {
       enemiesOutOfBounds,
       awaitingUpgrade: this.awaitingUpgrade,
       awaitingSpecial: this.awaitingSpecial,
+      awaitingMidBossReward: this.awaitingMidBossReward,
       awaitingPermanentUpgrade: this.awaitingPermanentUpgrade,
       awaitingWeaponSelection: this.awaitingWeaponSelection,
       weaponChoices: this.awaitingWeaponSelection ? WEAPON_ORDER : [],
@@ -3109,17 +3217,20 @@ export class ArenaScene extends Phaser.Scene {
     this.hp = 50; this.maxHp = 50; this.kills = 0; this.ashes = 0; this.roomIndex = 0;
     this.attackDamage = WEAPONS.sword.attackDamage; this.attackCooldown = WEAPONS.sword.attackCooldown;
     this.attackRange = WEAPONS.sword.attackRange; this.attackArcAngle = WEAPONS.sword.attackArcAngle;
-    this.moveSpeed = 260; this.dashSpeed = 620; this.dashCooldown = 1000; this.dashDuration = 240;
+    this.moveSpeed = 260; this.dashSpeed = 620; this.dashCooldown = 1000; this.dashDuration = BASE_STATS.dashDuration;
     this.roomRecovery = 0; this.lastCombatRecovery = undefined; this.criticalChance = 0; this.damageReduction = 0;
     this.lastAttackAt = -1000; this.playerAttackingUntil = 0; this.currentAttackFacing = 0;
     this.lastDashAt = -2000; this.invulnerableUntil = 0; this.playerKnockbackUntil = 0;
     this.transitionLockUntil = 0; this.roomCleared = false; this.transitioning = false; this.runFinished = false; this.gameStarted = false;
     this.countdownActive = false; this.countdownValue = 0; this.gamePaused = false;
-    this.awaitingUpgrade = false; this.awaitingSpecial = false; this.awaitingPermanentUpgrade = false; this.awaitingWeaponSelection = false;
-    this.acquiredUpgrades = new Map<UpgradeId, number>(); this.permanentUpgradeLevels = new Map<PermanentUpgradeId, number>();
+    this.awaitingUpgrade = false; this.awaitingSpecial = false; this.awaitingPermanentUpgrade = false;
+    this.awaitingWeaponSelection = false; this.awaitingMidBossReward = false;
+    this.acquiredUpgrades = new Map<UpgradeId, number>(); this.midBossBonusUpgrades = new Map<UpgradeId, number>();
+    this.permanentUpgradeLevels = new Map<PermanentUpgradeId, number>();
     this.upgradeChoices = []; this.permanentUpgradeChoices = []; this.rerolledUpgradeRooms = new Set<number>();
-    this.shopUpgradeChoicesByRoom = new Map<number, UpgradeId[]>(); this.upgradeRerollMessage = '';
+    this.shopUpgradeChoicesByRoom = new Map<number, UpgradeId[]>(); this.upgradeRerollMessage = ''; this.midBossRewardMessage = '';
     this.upgradeOverlay = undefined; this.specialOverlay = undefined; this.specialChoices = []; this.specialFeedbackText = undefined;
+    this.midBossRewardOverlay = undefined;
     this.restartOverlay = undefined; this.permanentOverlay = undefined; this.weaponOverlay = undefined;
     this.weaponSelectionCallback = undefined; this.permanentPurchaseMessage = '';
     this.startOverlay = undefined; this.pauseOverlay = undefined; this.settingsOverlay = undefined; this.statsOverlay = undefined;
