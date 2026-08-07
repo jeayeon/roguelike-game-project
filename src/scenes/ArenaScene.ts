@@ -57,11 +57,13 @@ const ATTACK_ORIGIN_OFFSET = 18;
 const BOSS_WALL_VOLLEY_INTERVAL = 3200;
 const BOSS_WALL_TELEGRAPH_DURATION = 900;
 const BOSS_CORNER_DASH_SPEED = 560;
+const BOSS_CORNER_DASH_WINDUP = 500;
 const BOSS_CORNER_DASH_DURATION = 420;
 const BOSS_CORNER_DASH_COOLDOWN = 2800;
-const MIDBOSS_ATTACK_RANGE = 240;
+const MIDBOSS_ATTACK_RANGE = 225;
 const MIDBOSS_ATTACK_WINDUP = 750;
 const MIDBOSS_ATTACK_COOLDOWN = 1300;
+const SPEAR_ATTACK_HALF_WIDTH = 11;
 const SHOW_DAMAGE_NUMBERS = true;
 const DIFFICULTY_ORDER: Difficulty[] = ['easy', 'normal', 'hard'];
 const DIFFICULTY_LABELS: Record<Difficulty, string> = {
@@ -102,13 +104,13 @@ const WEAPONS: Record<WeaponType, WeaponDefinition> = {
   },
   spear: {
     name: '균열의 창', description: '가장 긴 직선형 관통 범위',
-    attackDamage: 34, attackCooldown: ATTACK_COOLDOWN, attackRange: 138, attackArcAngle: 0.14,
+    attackDamage: 44, attackCooldown: ATTACK_COOLDOWN, attackRange: 138, attackArcAngle: 0.16,
     attackDuration: 250, walkTexture: 'playerSpear', attackAnimation: 'player-spear-attack', walkAnimation: 'player-spear-walk',
     displaySize: 105, bodyRadius: 49, bodyOffset: 79, color: 0x8ee7f2,
   },
   axe: {
     name: '심연의 도끼', description: '넓고 강하지만 느린 부채꼴 공격',
-    attackDamage: 44, attackCooldown: ATTACK_COOLDOWN * 2, attackRange: 111, attackArcAngle: 1.08,
+    attackDamage: 50, attackCooldown: ATTACK_COOLDOWN * 2, attackRange: 111, attackArcAngle: 1.08,
     attackDuration: 520, walkTexture: 'playerAxe', attackAnimation: 'player-axe-attack', walkAnimation: 'player-axe-walk',
     displaySize: 105, bodyRadius: 49, bodyOffset: 79, color: 0xff9a63,
   },
@@ -176,6 +178,7 @@ export class ArenaScene extends Phaser.Scene {
   private permanentUpgradeChoices: PermanentUpgradeDefinition[] = [];
   private upgradeChoices: UpgradeDefinition[] = [];
   private rerolledUpgradeRooms = new Set<number>();
+  private shopUpgradeChoicesByRoom = new Map<number, UpgradeId[]>();
   private upgradeRerollMessage = '';
   private upgradeOverlay?: Phaser.GameObjects.Container;
   private specialOverlay?: Phaser.GameObjects.Container;
@@ -204,6 +207,7 @@ export class ArenaScene extends Phaser.Scene {
   private bannerText!: Phaser.GameObjects.Text;
   private attackArc!: Phaser.GameObjects.Graphics;
   private attackSlash!: Phaser.GameObjects.Rectangle;
+  private attackArcHideTimer?: Phaser.Time.TimerEvent;
   private arenaGraphics!: Phaser.GameObjects.Graphics;
   private miniMapGraphics!: Phaser.GameObjects.Graphics;
   private bossHudGraphics!: Phaser.GameObjects.Graphics;
@@ -211,6 +215,7 @@ export class ArenaScene extends Phaser.Scene {
   private bossWarningCircle!: Phaser.GameObjects.Arc;
   private bossWarningText!: Phaser.GameObjects.Text;
   private bossTelegraphGraphics!: Phaser.GameObjects.Graphics;
+  private bossCornerDashWarningGraphics!: Phaser.GameObjects.Graphics;
   private bossWallTelegraphGraphics!: Phaser.GameObjects.Graphics;
   private bossWallWarningText!: Phaser.GameObjects.Text;
   private midBossTelegraphGraphics!: Phaser.GameObjects.Graphics;
@@ -251,7 +256,7 @@ export class ArenaScene extends Phaser.Scene {
     this.load.spritesheet('playerSpear', `${walkAssetPath}/player-spear-walk.png`, { frameWidth: 256, frameHeight: 256 });
     this.load.spritesheet('playerSpearAttack', `${characterAssetPath}/player-spear-attack.png`, { frameWidth: 256, frameHeight: 256 });
     this.load.spritesheet('playerAxe', `${walkAssetPath}/player-axe-walk.png`, { frameWidth: 256, frameHeight: 256 });
-    this.load.spritesheet('playerAxeAttack', `${characterAssetPath}/player-axe-attack.png`, { frameWidth: 256, frameHeight: 256 });
+    this.load.spritesheet('playerAxeAttack', `${characterAssetPath}/player-axe-attack-fixed.png`, { frameWidth: 384, frameHeight: 256 });
     const projectileAssetPath = `${import.meta.env.BASE_URL}assets/projectiles`;
     this.load.spritesheet('iceArrow', `${projectileAssetPath}/ice-arrow.png`, { frameWidth: 256, frameHeight: 256 });
     this.load.spritesheet('fireball', `${projectileAssetPath}/fireball.png`, { frameWidth: 256, frameHeight: 256 });
@@ -338,6 +343,10 @@ export class ArenaScene extends Phaser.Scene {
         this.rerollUpgradeChoices();
         return;
       }
+      if (this.awaitingSpecial && this.rooms[this.roomIndex].type === 'shop' && event.key.toLowerCase() === 'r') {
+        this.rerollShopChoices();
+        return;
+      }
       if (this.awaitingUpgrade && choiceIndex >= 0 && choiceIndex < this.upgradeChoices.length) this.selectUpgrade(choiceIndex);
       if (this.awaitingSpecial && choiceIndex >= 0 && choiceIndex < this.specialChoices.length) this.selectSpecialChoice(choiceIndex);
       if (this.awaitingSpecial && this.rooms[this.roomIndex].type === 'shop' && (event.key === 'Escape' || event.key === '4')) {
@@ -354,6 +363,7 @@ export class ArenaScene extends Phaser.Scene {
     this.bossWarningCircle = this.add.circle(0, 0, 58, 0xff596d, 0.12)
       .setStrokeStyle(5, 0xff8090, 1).setVisible(false).setDepth(7);
     this.bossTelegraphGraphics = this.add.graphics().setDepth(7);
+    this.bossCornerDashWarningGraphics = this.add.graphics().setVisible(false).setDepth(8);
     this.bossWallTelegraphGraphics = this.add.graphics().setDepth(7);
     this.midBossTelegraphGraphics = this.add.graphics().setDepth(8);
     this.midBossSwingGraphics = this.add.graphics().setDepth(9);
@@ -572,8 +582,8 @@ export class ArenaScene extends Phaser.Scene {
       const comparison = weapon === 'sword'
         ? '균형형'
         : weapon === 'spear'
-          ? '검과 동일한 공격력·공격속도'
-          : '검 대비 피해 약 1.3배 · 공격 간격 2배';
+          ? '검 대비 피해 약 1.3배 · 동일한 공격 속도'
+          : '검 대비 피해 약 1.5배 · 공격 간격 2배';
       children.push(this.add.text(cardXs[index], 505, comparison, {
         fontSize: '14px', color: '#91e3bd', align: 'center', wordWrap: { width: 210 },
         padding: { x: 6, y: 6 },
@@ -1099,6 +1109,7 @@ export class ArenaScene extends Phaser.Scene {
       enemy.attackPending = false;
       enemy.bossPhase = kind === 'boss' ? 1 : undefined;
       enemy.phaseInvulnerableUntil = 0;
+      enemy.cornerDashWindupUntil = 0;
       enemy.cornerDashUntil = 0;
       enemy.nextCornerDashAt = 0;
       enemy.lockedAttackAngle = 0;
@@ -1298,19 +1309,72 @@ export class ArenaScene extends Phaser.Scene {
       return true;
     }
 
+    if ((boss.cornerDashWindupUntil ?? 0) > 0) {
+      if (time < (boss.cornerDashWindupUntil ?? 0)) {
+        boss.setVelocity(0);
+        this.drawBossCornerDashWarning(boss);
+        return true;
+      }
+      boss.cornerDashWindupUntil = 0;
+      this.clearBossCornerDashWarning();
+      boss.cornerDashUntil = time + BOSS_CORNER_DASH_DURATION;
+      boss.nextCornerDashAt = time + BOSS_CORNER_DASH_COOLDOWN;
+      this.music.playEffect('dash');
+      this.time.delayedCall(BOSS_CORNER_DASH_DURATION, () => boss.active && boss.clearTint());
+      const centerAngle = Phaser.Math.Angle.Between(boss.x, boss.y, GAME_WIDTH / 2, GAME_HEIGHT / 2);
+      this.physics.velocityFromRotation(centerAngle, BOSS_CORNER_DASH_SPEED, boss.body!.velocity);
+      return true;
+    }
+
     if (boss.attackPending || time < (boss.nextCornerDashAt ?? 0)) return false;
     const nearHorizontalEdge = boss.x <= 182 || boss.x >= GAME_WIDTH - 182;
     const nearVerticalEdge = boss.y <= 203 || boss.y >= GAME_HEIGHT - 203;
     if (!nearHorizontalEdge || !nearVerticalEdge) return false;
 
-    boss.cornerDashUntil = time + BOSS_CORNER_DASH_DURATION;
-    boss.nextCornerDashAt = time + BOSS_CORNER_DASH_COOLDOWN;
+    boss.cornerDashWindupUntil = time + BOSS_CORNER_DASH_WINDUP;
+    boss.setVelocity(0);
     boss.setTint(0xffd27a);
-    this.music.playEffect('dash');
-    this.time.delayedCall(BOSS_CORNER_DASH_DURATION, () => boss.active && boss.clearTint());
-    const centerAngle = Phaser.Math.Angle.Between(boss.x, boss.y, GAME_WIDTH / 2, GAME_HEIGHT / 2);
-    this.physics.velocityFromRotation(centerAngle, BOSS_CORNER_DASH_SPEED, boss.body!.velocity);
+    this.drawBossCornerDashWarning(boss);
+    this.tweens.killTweensOf(this.bossCornerDashWarningGraphics);
+    this.bossCornerDashWarningGraphics.setAlpha(0.35);
+    this.tweens.add({
+      targets: this.bossCornerDashWarningGraphics,
+      alpha: 1,
+      duration: 90,
+      yoyo: true,
+      repeat: 2,
+    });
     return true;
+  }
+
+  private drawBossCornerDashWarning(boss: Enemy): void {
+    const angle = Phaser.Math.Angle.Between(boss.x, boss.y, GAME_WIDTH / 2, GAME_HEIGHT / 2);
+    const endX = boss.x + Math.cos(angle) * 105;
+    const endY = boss.y + Math.sin(angle) * 105;
+    const arrowSize = 13;
+    this.bossCornerDashWarningGraphics.clear().setVisible(true);
+    this.bossCornerDashWarningGraphics.fillStyle(0xffc857, 0.15).lineStyle(4, 0xffd778, 0.95);
+    this.bossCornerDashWarningGraphics.fillCircle(boss.x, boss.y, 62).strokeCircle(boss.x, boss.y, 62);
+    this.bossCornerDashWarningGraphics.lineBetween(
+      boss.x + Math.cos(angle) * 48,
+      boss.y + Math.sin(angle) * 48,
+      endX,
+      endY,
+    );
+    this.bossCornerDashWarningGraphics.fillStyle(0xffe29a, 1).fillTriangle(
+      endX,
+      endY,
+      endX + Math.cos(angle + 2.5) * arrowSize,
+      endY + Math.sin(angle + 2.5) * arrowSize,
+      endX + Math.cos(angle - 2.5) * arrowSize,
+      endY + Math.sin(angle - 2.5) * arrowSize,
+    );
+  }
+
+  private clearBossCornerDashWarning(): void {
+    if (!this.bossCornerDashWarningGraphics) return;
+    this.tweens.killTweensOf(this.bossCornerDashWarningGraphics);
+    this.bossCornerDashWarningGraphics.clear().setVisible(false).setAlpha(1);
   }
 
   private getBossPhase(boss: Enemy): 1 | 2 | 3 {
@@ -1452,6 +1516,7 @@ export class ArenaScene extends Phaser.Scene {
   private clearBossTelegraph(): void {
     this.bossTelegraphActive = false;
     this.bossTelegraphGraphics.clear();
+    this.clearBossCornerDashWarning();
     this.tweens.killTweensOf(this.bossWarningCircle);
     this.bossWarningCircle.setVisible(false).setScale(1).setAlpha(1);
     this.bossWarningText.setVisible(false).setText('');
@@ -1653,7 +1718,7 @@ export class ArenaScene extends Phaser.Scene {
         const lateralDistance = Math.abs(-deltaX * Math.sin(facing) + deltaY * Math.cos(facing));
         touchesAttackRange = forwardDistance + enemy.hitRadius >= 0
           && forwardDistance - enemy.hitRadius <= this.attackRange;
-        touchesAttackAngle = lateralDistance <= 9 + enemy.hitRadius;
+        touchesAttackAngle = lateralDistance <= SPEAR_ATTACK_HALF_WIDTH + enemy.hitRadius;
       }
       if (touchesAttackRange && touchesAttackAngle) {
         hitLanded = true;
@@ -1862,6 +1927,8 @@ export class ArenaScene extends Phaser.Scene {
     const weaponDefinition = WEAPONS[this.weapon];
     const visualDuration = duration ?? weaponDefinition.attackDuration;
     const attackOrigin = this.getAttackOrigin(facing);
+    this.attackArcHideTimer?.remove(false);
+    this.attackArcHideTimer = undefined;
     this.drawAttackArc(facing);
     this.tweens.killTweensOf(this.attackSlash);
     if (this.weapon === 'spear') {
@@ -1880,7 +1947,7 @@ export class ArenaScene extends Phaser.Scene {
         ease: 'Cubic.Out',
         onComplete: () => this.attackSlash.setVisible(false),
       });
-      this.time.delayedCall(Math.round(visualDuration * 0.9), () => this.attackArc.setVisible(false).clear());
+      this.scheduleAttackArcHide(Math.round(visualDuration * 0.9));
       return;
     }
     this.attackSlash
@@ -1899,7 +1966,14 @@ export class ArenaScene extends Phaser.Scene {
       ease: 'Sine.Out',
       onComplete: () => this.attackSlash.setVisible(false),
     });
-    this.time.delayedCall(Math.round(visualDuration * 0.85), () => this.attackArc.setVisible(false).clear());
+    this.scheduleAttackArcHide(Math.round(visualDuration * 0.85));
+  }
+
+  private scheduleAttackArcHide(delay: number): void {
+    this.attackArcHideTimer = this.time.delayedCall(delay, () => {
+      this.attackArc.setVisible(false).clear();
+      this.attackArcHideTimer = undefined;
+    });
   }
 
   private updateAttackVisualPosition(): void {
@@ -1913,7 +1987,7 @@ export class ArenaScene extends Phaser.Scene {
     const attackOrigin = this.getAttackOrigin(facing);
     this.attackArc.clear().setPosition(attackOrigin.x, attackOrigin.y).setVisible(true);
     if (this.weapon === 'spear') {
-      const halfWidth = 9;
+      const halfWidth = SPEAR_ATTACK_HALF_WIDTH;
       const perpendicularX = -Math.sin(facing) * halfWidth;
       const perpendicularY = Math.cos(facing) * halfWidth;
       const endX = Math.cos(facing) * this.attackRange;
@@ -2209,6 +2283,7 @@ export class ArenaScene extends Phaser.Scene {
     this.visitedRooms = new Set<number>();
     this.revealedRooms = new Set<number>([0]);
     this.rerolledUpgradeRooms = new Set<number>();
+    this.shopUpgradeChoicesByRoom = new Map<number, UpgradeId[]>();
     this.upgradeRerollMessage = '';
     this.rooms = createRandomRoomLayout();
     this.enemies.clear(true, true);
@@ -2373,7 +2448,7 @@ export class ArenaScene extends Phaser.Scene {
     this.showUpgradeSelection();
   }
 
-  private showSpecialRoom(type: 'healing' | 'shop'): void {
+  private showSpecialRoom(type: 'healing' | 'shop', excludedShopUpgradeIds: UpgradeId[] = []): void {
     this.awaitingSpecial = true;
     this.player.setVelocity(0);
     this.bannerText.setVisible(false);
@@ -2400,9 +2475,22 @@ export class ArenaScene extends Phaser.Scene {
         },
       ];
     } else {
-      const eligible = Phaser.Utils.Array.Shuffle(UPGRADES.filter((upgrade) => (
+      const shopEligible = UPGRADES.filter((upgrade) => (
         (this.acquiredUpgrades.get(upgrade.id) ?? 0) < upgrade.maxStacks
-      ))).slice(0, 2);
+      ));
+      const savedIds = excludedShopUpgradeIds.length === 0
+        ? this.shopUpgradeChoicesByRoom.get(this.roomIndex) ?? []
+        : [];
+      const saved = savedIds
+        .map((id) => shopEligible.find((upgrade) => upgrade.id === id))
+        .filter((upgrade): upgrade is UpgradeDefinition => upgrade !== undefined);
+      const excludedIds = excludedShopUpgradeIds.length > 0 ? excludedShopUpgradeIds : savedIds;
+      const alternatives = Phaser.Utils.Array.Shuffle(shopEligible.filter((upgrade) => !excludedIds.includes(upgrade.id)));
+      const previous = Phaser.Utils.Array.Shuffle(shopEligible.filter((upgrade) => excludedIds.includes(upgrade.id)));
+      const eligible = saved.length > 0
+        ? [...saved, ...alternatives].slice(0, 2)
+        : [...alternatives, ...previous].slice(0, 2);
+      this.shopUpgradeChoicesByRoom.set(this.roomIndex, eligible.map((upgrade) => upgrade.id));
       this.specialChoices = [
         {
           label: '응축된 회복약', cost: 18,
@@ -2467,14 +2555,29 @@ export class ArenaScene extends Phaser.Scene {
       }).setOrigin(0.5));
     });
     if (type === 'shop') {
-      const leaveButton = this.add.rectangle(GAME_WIDTH / 2, 535, 360, 54, 0x302837, 0.98)
+      const rerolled = this.rerolledUpgradeRooms.has(this.roomIndex);
+      const rerollButton = this.add.rectangle(GAME_WIDTH / 2, 515, 360, 42, rerolled ? 0x302b34 : 0x51405b, 0.98)
+        .setStrokeStyle(2, rerolled ? 0x625968 : 0xd0a4e8, 1);
+      if (!rerolled) {
+        rerollButton.setInteractive({ useHandCursor: true });
+        rerollButton.on('pointerover', () => rerollButton.setFillStyle(0x684e73, 1));
+        rerollButton.on('pointerout', () => rerollButton.setFillStyle(0x51405b, 0.98));
+        rerollButton.on('pointerdown', () => this.rerollShopChoices());
+      }
+      children.push(rerollButton);
+      children.push(this.add.text(GAME_WIDTH / 2, 515,
+        rerolled ? '이 상점의 재추첨을 사용했습니다' : `재 ${UPGRADE_REROLL_COST}로 상품 재추첨  ·  R`, {
+          fontSize: '17px', color: rerolled ? '#887e8c' : '#f0d9ff', fontStyle: 'bold', padding: { x: 5, y: 4 },
+        }).setOrigin(0.5));
+
+      const leaveButton = this.add.rectangle(GAME_WIDTH / 2, 570, 360, 46, 0x302837, 0.98)
         .setStrokeStyle(2, 0x9c8ba8, 1)
         .setInteractive({ useHandCursor: true });
       leaveButton.on('pointerover', () => leaveButton.setFillStyle(0x44384d, 1));
       leaveButton.on('pointerout', () => leaveButton.setFillStyle(0x302837, 0.98));
       leaveButton.on('pointerdown', () => this.leaveShop());
       children.push(leaveButton);
-      children.push(this.add.text(GAME_WIDTH / 2, 535, '거래하지 않고 나가기  ·  ESC / 4', {
+      children.push(this.add.text(GAME_WIDTH / 2, 570, '거래하지 않고 나가기  ·  ESC / 4', {
         fontSize: '18px', color: '#ddd0e3', fontStyle: 'bold', padding: { x: 6, y: 5 },
       }).setOrigin(0.5));
     } else {
@@ -2489,12 +2592,35 @@ export class ArenaScene extends Phaser.Scene {
         fontSize: '18px', color: '#ddd0e3', fontStyle: 'bold', padding: { x: 6, y: 5 },
       }).setOrigin(0.5));
     }
-    this.specialFeedbackText = this.add.text(GAME_WIDTH / 2, type === 'shop' ? 585 : 625, '', {
+    this.specialFeedbackText = this.add.text(GAME_WIDTH / 2, type === 'shop' ? 615 : 625, '', {
       fontSize: '18px', color: '#ff8f98', fontStyle: 'bold',
     }).setOrigin(0.5);
     children.push(this.specialFeedbackText);
     this.specialOverlay = this.add.container(0, 0, children).setDepth(100);
     this.publishAccessibleStatus();
+  }
+
+  private rerollShopChoices(): void {
+    if (!this.awaitingSpecial || this.rooms[this.roomIndex].type !== 'shop'
+      || this.rerolledUpgradeRooms.has(this.roomIndex)) return;
+    if (this.ashes < UPGRADE_REROLL_COST) {
+      this.specialFeedbackText?.setText(`재가 ${UPGRADE_REROLL_COST - this.ashes} 부족합니다.`);
+      return;
+    }
+    const previousIds = UPGRADES
+      .filter((upgrade) => this.specialChoices.some((choice) => choice.label === upgrade.name))
+      .map((upgrade) => upgrade.id);
+    this.ashes -= UPGRADE_REROLL_COST;
+    this.rerolledUpgradeRooms.add(this.roomIndex);
+    this.specialOverlay?.destroy(true);
+    this.specialOverlay = undefined;
+    this.specialFeedbackText = undefined;
+    this.music.playEffect('select');
+    this.showSpecialRoom('shop', previousIds);
+    (this.specialFeedbackText as Phaser.GameObjects.Text | undefined)
+      ?.setText(`재 ${UPGRADE_REROLL_COST}를 사용해 상품을 다시 불러왔습니다.`);
+    this.persistProgress();
+    this.updateHud();
   }
 
   private selectSpecialChoice(index: number): void {
@@ -2991,7 +3117,8 @@ export class ArenaScene extends Phaser.Scene {
     this.countdownActive = false; this.countdownValue = 0; this.gamePaused = false;
     this.awaitingUpgrade = false; this.awaitingSpecial = false; this.awaitingPermanentUpgrade = false; this.awaitingWeaponSelection = false;
     this.acquiredUpgrades = new Map<UpgradeId, number>(); this.permanentUpgradeLevels = new Map<PermanentUpgradeId, number>();
-    this.upgradeChoices = []; this.permanentUpgradeChoices = []; this.rerolledUpgradeRooms = new Set<number>(); this.upgradeRerollMessage = '';
+    this.upgradeChoices = []; this.permanentUpgradeChoices = []; this.rerolledUpgradeRooms = new Set<number>();
+    this.shopUpgradeChoicesByRoom = new Map<number, UpgradeId[]>(); this.upgradeRerollMessage = '';
     this.upgradeOverlay = undefined; this.specialOverlay = undefined; this.specialChoices = []; this.specialFeedbackText = undefined;
     this.restartOverlay = undefined; this.permanentOverlay = undefined; this.weaponOverlay = undefined;
     this.weaponSelectionCallback = undefined; this.permanentPurchaseMessage = '';

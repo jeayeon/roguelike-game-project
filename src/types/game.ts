@@ -18,6 +18,7 @@ export type Enemy = Phaser.Physics.Arcade.Sprite & {
   kind: EnemyKind;
   hitRadius: number;
   phaseInvulnerableUntil?: number;
+  cornerDashWindupUntil?: number;
   cornerDashUntil?: number;
   nextCornerDashAt?: number;
   lockedAttackAngle?: number;
